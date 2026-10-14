@@ -3,8 +3,7 @@ FROM python:3.12-slim-bookworm
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    DISPLAY=:99 \
-    PORT=""
+    DISPLAY=:99
 
 # 合并安装 + 清理 + tini
 RUN apt-get update && apt-get install -y --no-install-recommends \
