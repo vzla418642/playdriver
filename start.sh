@@ -1,7 +1,6 @@
 #!/bin/bash
 set -e
-
-# 清理锁
+unset PORT
 rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
 
 # 1. 起 Xvfb 并等它就绪，不是 sleep 1
