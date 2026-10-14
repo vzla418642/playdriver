@@ -16,10 +16,10 @@ x11vnc -display :99 -forever -shared -nopw -rfbport 5900 -quiet -bg -o /tmp/x11v
 NOVNC_PATH=$(ls -d /usr/share/novnc /usr/share/webapps/novnc 2>/dev/null | head -n1)
 websockify --web $NOVNC_PATH 6080 localhost:5900 -D --log-file /tmp/websockify.log
 
-echo "=== 环境就绪 ==="
-echo "noVNC: http://localhost:6080"
-echo "执行: $@"
-echo "================"
+# echo "=== 环境就绪 ==="
+# echo "noVNC: http://localhost:6080"
+# echo "执行: $@"
+# echo "================"
 
 # 3. 执行用户传进来的命令
 exec "$@"

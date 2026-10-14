@@ -2,8 +2,9 @@
 docker run --rm -p 6080:6080 ghcr.io/vic2ray/playdriver:latest
 
 # 2. 跑他自己的脚本，这才是你要的隐形
-docker run --rm -p 6080:6080 -v C:\Users\Administrator\scripts:/app/scripts \
-  ghcr.io/vic2ray/playdriver:latest python scripts/test.py
+docker run --rm -p 6080:6080 -v /home/v:/app/scripts ghcr.io/vzla418642/playdriver:latest python scripts/tumblr_login.py
+
+docker run --rm -i -p 6080:6080 ghcr.io/vzla418642/playdriver:latest python -u - < tumblr_login.py
 
 # 3. 跑任意命令都行
 docker run --rm -p 6080:6080 -v C:\Users\Administrator\scripts:/app/scripts \
