@@ -1,3 +1,4 @@
 requests
 nodriver
 playwright
+uiautomator2
