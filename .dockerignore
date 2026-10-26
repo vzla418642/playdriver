@@ -1,0 +1,7 @@
+# 构建上下文瘦身。镜像只 COPY requirements.txt / start.sh / scripts/，
+# 其余文件留在宿主机，避免 .git 和缓存把上下文撑大。
+.git
+.github
+**/__pycache__
+**/*.pyc
+*.md

@@ -1,5 +1,5 @@
-# scripts/playwright_test.py
-from playwright.sync_api import sync_playwright
+# scripts/test_playwright.py
+from patchright.sync_api import sync_playwright
 import time
 import os
 

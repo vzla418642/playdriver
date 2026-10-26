@@ -30,4 +30,7 @@ EXPOSE 6080 5900 8000
 
 # 关键：start.sh 变 ENTRYPOINT，用户传什么就执行什么
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/start.sh"]
-CMD ["python", "scripts/test.py"]
+# 默认：转发服务 + 常驻浏览器，同一个端口同时可用。
+# 只要转发（不起浏览器、省 200-400MB）：
+#   CMD ["python", "-u", "scripts/run.py", "--no-browser"]
+CMD ["python", "-u", "scripts/run.py"]

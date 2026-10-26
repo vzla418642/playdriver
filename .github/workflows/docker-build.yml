@@ -5,9 +5,11 @@ name: Build and Push playdriver
 on:
   push:
     branches: [main]
+    # 反向过滤：仓库内任何改动都重建镜像，只排除纯文档。
+    # 避免新增 COPY 文件后忘记加入白名单，导致镜像静默过期。
     paths:
-      - "Dockerfile"
-      - ".github/workflows/docker-build.yml"
+      - "**"
+      - "!**.md"
   workflow_dispatch:  # 允许在 Actions 页面手动触发
 
 jobs:

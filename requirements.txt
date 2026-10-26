@@ -1,4 +1,14 @@
 requests
+
+# 浏览器
 nodriver
-playwright
+patchright
+
+# 安卓模拟器
 uiautomator2
+
+# scripts/bypass.py 绕过服务
+curl_cffi>=0.7
+fastapi>=0.100
+uvicorn>=0.27
+PyPasser[vision]>=1.1
