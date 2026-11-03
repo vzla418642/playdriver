@@ -1,0 +1,549 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>uni2ui · 画面监控</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%234a9eff'/></svg>">
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --line:#262b36; --fg:#dfe3ea;
+    --dim:#8b93a1; --ok:#3fb950; --bad:#d9534f; --accent:#4a9eff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:14px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;
+       -webkit-tap-highlight-color:transparent}
+  header{position:sticky;top:0;z-index:30;display:flex;gap:12px;align-items:center;
+         padding:10px 16px;background:rgba(23,26,33,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--line)}
+  h1{margin:0;font-size:15px;font-weight:600;letter-spacing:.3px}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--bad);flex:none}
+  .dot.on{background:var(--ok);box-shadow:0 0 0 3px rgba(63,185,80,.15)}
+  #adb{color:var(--dim);font-size:12px}
+  #count{color:var(--dim);font-size:12px;margin-left:auto}
+  .hint{color:var(--dim);font-size:12px}
+  #close{display:none;margin-left:auto;padding:4px 10px;border-radius:6px;cursor:pointer;
+         background:#2b2b2b;color:var(--fg);border:1px solid #3a4150;font-size:13px}
+  #close:hover{background:#3a3a3a}
+  body.focus #close{display:block}
+  body.focus #count{display:none}
+
+  main{padding:16px;display:grid;gap:14px;align-items:start;justify-content:center;
+       grid-template-columns:repeat(auto-fit,minmax(260px,340px))}
+  /* 焦点模式：整页变成 flex 竖排，header 占它该占的，剩下全给画面 */
+  body.focus{display:flex;flex-direction:column;height:100vh;height:100dvh;overflow:hidden}
+  body.focus header{flex:none}
+  body.focus main{flex:1;min-height:0;padding:0 14px;display:flex;
+                  justify-content:center;align-items:stretch;gap:6px}
+
+  .tile{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+        overflow:hidden;cursor:zoom-in;transition:border-color .15s}
+  .tile:hover{border-color:#39404f}
+  .shot{position:relative;display:flex;justify-content:center;align-items:center;
+        background:#000;min-height:180px;max-height:72vh;overflow:hidden}
+  .shot img{display:block;width:100%;height:auto;max-height:72vh;object-fit:contain;
+            -webkit-user-drag:none;user-select:none}
+  /* 焦点模式下画面是"可点的"：手型光标；按住拖动时换成抓紧的手 */
+  body.focus .shot img{cursor:pointer;touch-action:none}
+  body.focus .shot img.dragging{cursor:grabbing}
+  .meta{display:flex;gap:8px;align-items:center;padding:7px 10px;
+        border-top:1px solid var(--line);font-size:12px;color:var(--dim)}
+  .serial{font-family:ui-monospace,Consolas,monospace;color:var(--fg);
+          overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .tag{margin-left:auto;flex:none;padding:1px 7px;border-radius:20px;
+       border:1px solid var(--line);font-family:ui-monospace,Consolas,monospace}
+  .tag.agent{color:var(--ok);border-color:rgba(63,185,80,.35)}
+  .tag.screencap{color:#d9a34f;border-color:rgba(217,163,79,.35)}
+  .tile.offline .shot{background:repeating-linear-gradient(45deg,#14161b,#14161b 8px,#181b22 8px,#181b22 16px)}
+  .tile.offline{cursor:default;opacity:.75}
+  .tile.offline .shot::after{content:"设备不在线";color:var(--dim);font-size:12px}
+  body.focus .tile{display:none}
+  /* 画面撑满可用高度，宽度跟着比例走。
+     不写死 width:100% 是为了不产生 object-fit 的黑边 —— 坐标换算也就不用纠偏 */
+  body.focus .tile.active{display:flex;height:100%;cursor:default;width:auto;max-width:100%;flex:none}
+  body.focus .tile.active .shot{height:100%;max-height:none}
+  body.focus .tile.active .shot img{width:auto;height:100%;max-width:100%;max-height:none}
+  body.focus .tile.active .meta{display:none}
+  .empty{grid-column:1/-1;text-align:center;color:var(--dim);padding:60px 20px}
+  .empty code{color:var(--fg);background:var(--panel);padding:2px 6px;border-radius:4px}
+
+  /* 点按涟漪 */
+  .ripple{position:absolute;width:36px;height:36px;margin:-18px 0 0 -18px;border-radius:50%;
+          border:2px solid var(--accent);pointer-events:none;
+          animation:rip .45s ease-out forwards}
+  @keyframes rip{from{opacity:.95;transform:scale(.35)}to{opacity:0;transform:scale(1.7)}}
+
+  /* 底部操作栏。窄屏时是页面底部一条；
+     焦点模式下改成贴着屏幕框右侧的竖排、垂直居中（见下面的 body.focus 规则） */
+  #bar{position:fixed;left:0;right:0;bottom:0;z-index:25;display:none;
+       gap:8px;justify-content:center;flex-wrap:wrap;padding:10px 12px;
+       background:rgba(23,26,33,.95);backdrop-filter:blur(10px);
+       border-top:1px solid var(--line)}
+  body.focus #bar{display:flex;position:static;order:2;flex-direction:column;
+                  justify-content:center;align-self:center;flex-wrap:nowrap;
+                  gap:6px;padding:0;background:none;border:0;backdrop-filter:none}
+  #bar button{flex:none;min-width:64px;padding:9px 14px;border-radius:8px;cursor:pointer;
+              background:#242933;color:var(--fg);border:1px solid #333a47;font-size:13px;
+              touch-action:manipulation;transition:background .12s,border-color .12s}
+  #bar button:hover{background:#2f3542;border-color:#414a5a}
+  #bar button:active,#bar button.hit{background:var(--accent);border-color:var(--accent);color:#fff}
+  #bar button[hidden]{display:none}
+  /* 竖排时统一宽度，别一个宽一个窄 */
+  body.focus #bar button{width:74px;min-width:0;padding:10px 0}
+
+  /* 直接打字用的输入框。
+     焦点模式下它常驻焦点，敲什么就发什么 —— 没有面板、没有发送按钮。
+     挪到屏幕外 + 1px + 透明：不占地方，也不会让 iOS 缩放页面。 */
+  #kbd{position:fixed;left:-100px;top:0;width:1px;height:1px;opacity:0;
+       font-size:16px;border:0;padding:0;margin:0;pointer-events:none}
+
+  /* 轻提示 */
+  #toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(8px);
+         padding:6px 14px;border-radius:20px;background:rgba(40,46,58,.96);
+         border:1px solid #3a4150;font-size:12px;color:var(--fg);
+         opacity:0;pointer-events:none;transition:opacity .18s,transform .18s;z-index:40}
+  #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  #toast.bad{border-color:rgba(217,83,79,.6);color:#ffb4b0}
+
+  /* 窄屏（手机上看）：右侧竖排会把画面挤成一条，改回底部横排。
+     媒体查询必须放最后，否则会被上面同特异性的规则覆盖 */
+  @media (max-width:700px){
+    body.focus main{padding-bottom:60px}
+    body.focus #bar{position:fixed;left:0;right:0;bottom:0;order:0;
+                    flex-direction:row;justify-content:center;flex-wrap:wrap;
+                    gap:8px;padding:8px 10px;
+                    background:rgba(23,26,33,.95);backdrop-filter:blur(10px);
+                    border-top:1px solid var(--line)}
+    body.focus #bar button{width:auto;min-width:56px;padding:9px 12px}
+    #toast{bottom:74px}
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>uni2ui</h1>
+  <span class="dot" id="dot"></span>
+  <span id="adb">连接中…</span>
+  <span class="hint" id="hint">点画面放大 · 放大后可操作</span>
+  <span id="count"></span>
+  <button id="close" title="退出（Esc）">✕ 退出</button>
+</header>
+
+<main id="grid">
+  <div id="bar">
+    <button data-key="back" title="返回键">返回</button>
+    <button data-key="home" title="Home 键">Home</button>
+    <button data-key="recent" title="最近任务">最近</button>
+    <button data-key="power" title="电源键">电源</button>
+    <button id="summon" hidden title="调出软键盘">键盘</button>
+  </div>
+</main>
+
+<input id="kbd" type="text" autocomplete="off" autocapitalize="off"
+       autocorrect="off" spellcheck="false" tabindex="-1" aria-hidden="true">
+
+<div id="toast"></div>
+
+<script>
+const grid  = document.getElementById('grid');
+const dot   = document.getElementById('dot');
+const adbEl = document.getElementById('adb');
+const cntEl = document.getElementById('count');
+const hint  = document.getElementById('hint');
+const bar   = document.getElementById('bar');
+const toast = document.getElementById('toast');
+const kbd   = document.getElementById('kbd');
+
+// ---- 口令（服务端设了 UNI2UI_TOKEN 才需要）-------------------------------
+const TOKEN = (() => {
+  const fromUrl = new URLSearchParams(location.search).get('token');
+  if (fromUrl) { try { localStorage.setItem('uni2ui-token', fromUrl); } catch (e) {} return fromUrl; }
+  try { return localStorage.getItem('uni2ui-token') || ''; } catch (e) { return ''; }
+})();
+function withToken(url) {
+  if (!TOKEN) return url;
+  return url + (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(TOKEN);
+}
+
+// 接口前缀。独立运行时页面在 /，嵌进 playdriver 时在 /adbs/（见 scripts/routes.py）。
+// 去掉 pathname 最后一段就是前缀，两种部署都成立。
+// 不能用 <base href> 解决：以 / 开头的绝对路径不受 base 影响，必须真拼。
+const BASE = location.pathname.replace(/[^/]*$/, '');
+
+const tiles = new Map();   // serial -> {el, img, serialEl, tag, shot}
+let focusSerial = null;
+let emptyEl = null;
+
+// ---- 小工具 --------------------------------------------------------------
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(v, hi));
+
+let toastTimer = null;
+function flash(msg, bad) {
+  toast.textContent = msg;
+  toast.classList.toggle('bad', !!bad);
+  toast.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.classList.remove('show'), 1200);
+}
+
+async function post(path, body) {
+  const r = await fetch(withToken(path), {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+  });
+  let data = {};
+  try { data = await r.json(); } catch (e) {}
+  if (!r.ok) throw new Error(data.detail || ('HTTP ' + r.status));
+  return data;
+}
+
+// ---- 坐标换算 ------------------------------------------------------------
+// object-fit:contain 会在元素框里留黑边，必须按"实际画面"的矩形算，
+// 直接用 getBoundingClientRect 会让点击位置整体偏移
+function imgPoint(img, clientX, clientY) {
+  const r = img.getBoundingClientRect();
+  const nw = img.naturalWidth || 0, nh = img.naturalHeight || 0;
+  if (!nw || !nh || !r.width || !r.height) return null;
+  const scale = Math.min(r.width / nw, r.height / nh);
+  const w = nw * scale, h = nh * scale;
+  const left = r.left + (r.width - w) / 2;
+  const top  = r.top  + (r.height - h) / 2;
+  return {
+    x: clamp(Math.round((clientX - left) / w * nw), 0, nw - 1),
+    y: clamp(Math.round((clientY - top) / h * nh), 0, nh - 1),
+  };
+}
+
+function ripple(shotEl, clientX, clientY) {
+  const r = shotEl.getBoundingClientRect();
+  const d = document.createElement('div');
+  d.className = 'ripple';
+  d.style.left = (clientX - r.left) + 'px';
+  d.style.top  = (clientY - r.top) + 'px';
+  shotEl.appendChild(d);
+  setTimeout(() => d.remove(), 460);
+}
+
+// ---- 发送操作 ------------------------------------------------------------
+// 成功返回响应对象，失败返回 null（错误已经弹提示了），方便调用方决定要不要重试
+async function send(serial, action, data) {
+  try {
+    const r = await post(`${BASE}api/${encodeURIComponent(serial)}/input`, {action, ...data});
+    // 手势和打字不弹提示：打字每停一下就来一条，太吵
+    if (action === 'tap' || action === 'swipe' || action === 'text') return r;
+    flash(`已发送 · ${r.ms}ms`);
+    return r;
+  } catch (err) {
+    flash(String(err.message || err), true);
+    return null;
+  }
+}
+
+// ---- 直接打字 ------------------------------------------------------------
+// 焦点模式下 #kbd 常驻焦点，敲什么就发什么，不用先开面板再点发送。
+// 停顿 250ms 才发一批：每敲一个字发一次太吵，而且中文输入法组合期间
+// 会先冒出一串拼音中间态。
+//
+// 走剪贴板粘贴（服务端干的），所以中文、emoji 都能打。
+const FLUSH_MS = 250;
+let flushTimer = null;
+let inflight = Promise.resolve();
+
+// 只有带精确指针的桌面环境才抢焦点。手机上抢焦点会弹软键盘，
+// 把画面挡掉一半，反而没法点 —— 那种环境给一个「键盘」按钮手动叫出来
+const hasMouse = window.matchMedia('(hover:hover) and (pointer:fine)').matches;
+
+function grabFocus() {
+  if (!hasMouse || focusSerial === null) return;
+  try { kbd.focus({preventScroll: true}); } catch (e) { kbd.focus(); }
+}
+
+function flushText() {
+  clearTimeout(flushTimer);
+  const text = kbd.value;
+  if (!text || focusSerial === null) return inflight;
+  const serial = focusSerial;
+  kbd.value = '';        // 先清空再发：发送期间敲的字会进新的缓冲
+  // 长文本切片发：一次粘一大坨既会顶到服务端上限，也会让帧循环卡太久
+  const chunks = [];
+  for (let i = 0; i < text.length; i += 800) chunks.push(text.slice(i, i + 800));
+  inflight = inflight.then(async () => {
+    for (const chunk of chunks) {
+      const r = await send(serial, 'text', {text: chunk});
+      // 失败了塞回去，别把用户打的字吞掉
+      if (r === null) { kbd.value = chunk + kbd.value; return; }
+    }
+  });
+  return inflight;
+}
+
+function scheduleFlush() {
+  clearTimeout(flushTimer);
+  flushTimer = setTimeout(flushText, FLUSH_MS);
+}
+
+kbd.addEventListener('input', () => {
+  if (focusSerial !== null) scheduleFlush();
+});
+
+kbd.addEventListener('keydown', (e) => {
+  if (focusSerial === null) return;
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    const serial = focusSerial;
+    // 先把缓冲的文字打进去，再敲回车，顺序不能反
+    flushText().then(() => {
+      if (focusSerial === serial) send(serial, 'key', {name: 'enter'});
+    });
+    return;
+  }
+  if (e.key === 'Backspace' && !kbd.value) {
+    // 本地缓冲空了才删设备上的字；还有字就按默认行为删本地的
+    e.preventDefault();
+    send(focusSerial, 'key', {name: 'del'});
+  }
+});
+
+kbd.addEventListener('blur', () => {
+  // 点画面、点底部按钮都会把焦点抢走，抢回来 —— 不然下一键就打不出去了
+  if (focusSerial === null || !hasMouse) return;
+  setTimeout(() => { if (focusSerial !== null && document.activeElement !== kbd) grabFocus(); }, 0);
+});
+
+// ---- 手势 ----------------------------------------------------------------
+let drag = null;
+
+function bindGestures(t, serial) {
+  const img = t.img;
+
+  img.addEventListener('pointerdown', (e) => {
+    // 网格模式下点一下是"放大"，不是点设备；放大之后才是真正的点按
+    if (focusSerial !== serial) return;
+    if (e.button > 0) return;
+    const p = imgPoint(img, e.clientX, e.clientY);
+    if (!p) return;
+    try { img.setPointerCapture(e.pointerId); } catch (err) {}
+    img.classList.add('dragging');
+    drag = {start: p, t0: performance.now(), pointerId: e.pointerId};
+    e.preventDefault();
+  });
+
+  img.addEventListener('pointerup', (e) => {
+    if (!drag || drag.pointerId !== e.pointerId) return;
+    const p = imgPoint(img, e.clientX, e.clientY);
+    const start = drag.start;
+    const held = performance.now() - drag.t0;
+    drag = null;
+    img.classList.remove('dragging');
+    grabFocus();          // 点完画面焦点会丢，抢回来好接着打字
+    if (!p) return;
+
+    const dist = Math.hypot(p.x - start.x, p.y - start.y);
+    if (dist < 10) {
+      ripple(t.shot, e.clientX, e.clientY);
+      if (held >= 500) {
+        // 长按：同坐标的 swipe，时长就是按住的时长
+        send(serial, 'swipe', {x1: start.x, y1: start.y, x2: start.x, y2: start.y,
+                               duration: clamp(Math.round(held), 500, 2000)});
+      } else {
+        send(serial, 'tap', {x: p.x, y: p.y});
+      }
+    } else {
+      send(serial, 'swipe', {x1: start.x, y1: start.y, x2: p.x, y2: p.y,
+                             duration: clamp(Math.round(held), 80, 600)});
+    }
+    e.preventDefault();
+  });
+
+  img.addEventListener('pointercancel', () => { drag = null; img.classList.remove('dragging'); });
+  img.addEventListener('dragstart', (e) => e.preventDefault());
+  img.addEventListener('contextmenu', (e) => { if (focusSerial === serial) e.preventDefault(); });
+}
+
+// ---- 卡片 ----------------------------------------------------------------
+function makeTile(serial) {
+  const el = document.createElement('div');
+  el.className = 'tile';
+  el.innerHTML =
+    '<div class="shot"><img alt=""></div>' +
+    '<div class="meta"><span class="serial"></span><span class="tag"></span></div>';
+  const t = {
+    el,
+    shot: el.querySelector('.shot'),
+    img: el.querySelector('img'),
+    serialEl: el.querySelector('.serial'),
+    tag: el.querySelector('.tag'),
+  };
+  el.addEventListener('click', () => {
+    if (focusSerial === serial) return;   // 已经在焦点，这一下是给设备的
+    toggleFocus(serial);
+  });
+  bindGestures(t, serial);
+  return t;
+}
+
+function streamUrl(serial) {
+  return withToken(BASE + 'stream/' + encodeURIComponent(serial));
+}
+
+function wantStream(serial, online) {
+  if (!online) return false;
+  return focusSerial === null || focusSerial === serial;
+}
+
+function syncSrc(t, serial, online) {
+  const want = wantStream(serial, online);
+  const has = t.img.hasAttribute('src');
+  if (want && !has) t.img.src = streamUrl(serial);
+  if (!want && has) t.img.removeAttribute('src');
+}
+
+function updateTile(t, d) {
+  const online = d.state === 'device';
+  const s = d.stats;
+  t.serialEl.textContent = d.serial + (d.model ? '  ' + d.model : '');
+  t.el.classList.toggle('offline', !online);
+  t.el.classList.toggle('active', focusSerial === d.serial);
+  syncSrc(t, d.serial, online);
+
+  if (!online) {
+    t.tag.textContent = d.state;
+    t.tag.className = 'tag';
+    return;
+  }
+  if (!s) {
+    t.tag.textContent = '待启动';
+    t.tag.className = 'tag';
+    return;
+  }
+  // 显示实测帧率而不是目标帧率：之前面板写着 8fps、实际只有 1fps，很误导
+  const real = s.actual_fps ? s.actual_fps.toFixed(1) + 'fps' : '—';
+  const age = s.frame_age === null ? '—' : s.frame_age + 's';
+  t.tag.textContent = s.backend === 'screencap'
+    ? `screencap · ${real} · 无 agent`
+    : `${s.backend} · ${real} · ${age}`;
+  t.tag.className = 'tag ' + s.backend;
+  // 同一台机器可能有多条 adb 通道，合并后把别名放进 tooltip 备查
+  const alias = (d.aliases && d.aliases.length) ? `同一台：${d.aliases.join('、')}` : '';
+  t.el.title = [s.error, alias].filter(Boolean).join('\n');
+}
+
+function toggleFocus(serial) {
+  const t = tiles.get(serial);
+  if (t && t.el.classList.contains('offline')) return;
+  const leaving = focusSerial === serial;
+  if (leaving) {
+    clearTimeout(flushTimer);
+    flushText();          // 退出前把没发出去的字发掉
+  }
+  focusSerial = leaving ? null : serial;
+  drag = null;
+  document.querySelectorAll('.shot img.dragging').forEach((i) => i.classList.remove('dragging'));
+  document.body.classList.toggle('focus', focusSerial !== null);
+  hint.textContent = focusSerial === null
+    ? '点画面放大 · 放大后可操作'
+    : '点=点击 · 拖=滑动 · 按住=长按 · 直接打字 · Esc 退出';
+  for (const [s, tile] of tiles) {
+    const online = !tile.el.classList.contains('offline');
+    tile.el.classList.toggle('active', s === focusSerial);
+    syncSrc(tile, s, online);
+  }
+  if (focusSerial === null) kbd.blur(); else grabFocus();
+}
+
+// ---- 操作栏 --------------------------------------------------------------
+bar.addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-key]');
+  if (!btn || focusSerial === null) return;
+  send(focusSerial, 'key', {name: btn.dataset.key});
+  btn.classList.add('hit');
+  setTimeout(() => btn.classList.remove('hit'), 140);
+});
+
+// 触屏环境没有物理键盘，给一个按钮把软键盘叫出来（桌面环境不显示，
+// 焦点模式下直接敲就行）
+if (!hasMouse) document.getElementById('summon').hidden = false;
+document.getElementById('summon').addEventListener('click', () => {
+  if (focusSerial !== null) kbd.focus();
+});
+
+document.getElementById('close').addEventListener('click', () => {
+  if (focusSerial !== null) toggleFocus(focusSerial);
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && focusSerial !== null) toggleFocus(focusSerial);
+});
+
+// ---- 轮询 ----------------------------------------------------------------
+async function poll() {
+  let data;
+  try {
+    const r = await fetch(withToken(BASE + 'api/devices'), {cache: 'no-store'});
+    if (r.status === 401) {
+      dot.classList.remove('on');
+      adbEl.textContent = '需要口令';
+      hint.textContent = '在地址后面加 ?token=你的口令';
+      return;
+    }
+    data = await r.json();
+  } catch (err) {
+    dot.classList.remove('on');
+    adbEl.textContent = '接口不可达';
+    return;
+  }
+
+  dot.classList.toggle('on', !!data.adb.ok);
+  adbEl.textContent = data.adb.ok
+    ? `adb ${data.adb.host}:${data.adb.port}`
+    : `adb 不可用 · ${data.adb.error || ''}`;
+
+  const seen = new Set();
+  let onlineCount = 0;
+
+  for (const d of data.devices) {
+    seen.add(d.serial);
+    if (d.state === 'device') onlineCount++;
+    let t = tiles.get(d.serial);
+    if (!t) {
+      t = makeTile(d.serial);
+      tiles.set(d.serial, t);
+      grid.appendChild(t.el);
+    }
+    updateTile(t, d);
+    // 正在操作的设备掉线了，退回网格，别把人困在空白页面上
+    if (focusSerial === d.serial && d.state !== 'device') toggleFocus(d.serial);
+  }
+
+  for (const [serial, t] of tiles) {
+    if (seen.has(serial)) continue;
+    if (focusSerial === serial) toggleFocus(serial);
+    t.img.removeAttribute('src');
+    t.el.remove();
+    tiles.delete(serial);
+  }
+
+  // 设备全没了给个提示，别留白屏
+  if (tiles.size === 0 && !emptyEl) {
+    emptyEl = document.createElement('div');
+    emptyEl.className = 'empty';
+    emptyEl.innerHTML =
+      '当前 adb 里没有设备。<br>等 u2 / kumuapp / vkapp 把设备连上，' +
+      '这里会自动出现，不用刷新。<br><br>' +
+      '手动验证：<code>adb devices</code>';
+    grid.appendChild(emptyEl);
+  } else if (tiles.size > 0 && emptyEl) {
+    emptyEl.remove();
+    emptyEl = null;
+  }
+
+  cntEl.textContent = `${onlineCount} 台在线 / ${data.devices.length} 台可见`;
+}
+
+poll();
+setInterval(poll, 2000);
+</script>
+</body>
+</html>

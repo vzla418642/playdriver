@@ -2,20 +2,22 @@
 
 Playdriver 是一个带**可视化桌面浏览器**的 Docker 运行环境：容器内跑 Xvfb + x11vnc + noVNC，提供一个可用浏览器远程查看的桌面（`1280x800`，显示器 `:99`），并预装 Google Chrome 与 Python 自动化栈。
 
-默认同时启动两样东西：端口 `8000` 上的 **Cloudflare 绕过服务**（把目标 URL 拼在服务地址后面，普通 HTTP 客户端就能拿到过墙后的响应，不用改客户端代码，也不用手动处理 `cf_clearance`），以及 noVNC 桌面里的一个**常驻浏览器**——你自己点、验证自动过，`/cookies` 直接读它的 cookie。只想当纯转发后端时加 `--no-browser`。传入命令即可替换这一默认行为，改为运行你自己的脚本。
+默认同时启动三样东西：端口 `8000` 上的 **Cloudflare 绕过服务**（把目标 URL 拼在服务地址后面，普通 HTTP 客户端就能拿到过墙后的响应，不用改客户端代码，也不用手动处理 `cf_clearance`）、noVNC 桌面里的一个**常驻浏览器**（你自己点、验证自动过，`/cookies` 直接读它的 cookie）、以及同一个端口 `/adbs` 上的**手机画面监控台**（把 adb 里的模拟器/真机画面推成 MJPEG，能点、能滑、能直接打字）。桌面画面本身也在同一个端口的 `/vnc` 上，所以**看浏览器、看手机都只需要 `8000` 一个端口**。只要转发后端时加 `--no-browser --no-ui`，只摘常驻浏览器用 `--no-browser`，只摘画面监控用 `--no-ui`，只摘桌面画面用 `--no-vnc`。传入命令即可替换这一默认行为，改为运行你自己的脚本。
 
 镜像内包含 Python 3.12、Google Chrome、Xvfb、x11vnc、noVNC，以及 `requests`、`patchright`、`nodriver`、`uiautomator2`、`curl_cffi`、`fastapi`、`uvicorn`、`PyPasser[vision]`。Chrome 路径固定为 `/usr/bin/google-chrome`。
 
 ## 快速开始
 
 ```sh
-docker run --rm -p 6080:6080 -p 8000:8000 \
+docker run --rm -p 8000:8000 \
   -v playdriver-profile:/data/profile \
   ghcr.io/vic2ray/playdriver:latest
 ```
 
-- `http://localhost:6080` —— noVNC 桌面，里面已经有一个开好的 Chrome，地址栏随便输
+- `http://localhost:8000/vnc` —— noVNC 桌面，里面已经有一个开好的 Chrome，地址栏随便输（打开即连，画面跟着窗口缩放）
 - `http://localhost:8000` —— 绕过服务：自述页面、转发、`/cookies` 都在这个端口上
+- `http://localhost:8000/adbs` —— 手机画面监控台：adb 里连着的设备画面 + 点滑按键 / 打字
+- `http://localhost:6080` —— 同一个桌面的老入口（`websockify --web`），还留着，但可以不用了
 - 页面停在 Cloudflare 拦截页上时，几秒内自动过掉，不用你点复选框
 
 `-v playdriver-profile:/data/profile` 是浏览器 profile 的落盘位置，挂出来登录态才能跨容器保留；不挂也能跑，只是容器删了 cookie 就没了。
@@ -111,7 +113,7 @@ Cloudflare 发的 `cf_clearance` 通常是 `domain=.example.com` 的**域级 coo
 带代理启动：
 
 ```sh
-docker run --rm -p 6080:6080 -p 8000:8000 \
+docker run --rm -p 8000:8000 \
   -e PROXY=http://192.168.1.10:7890 \
   ghcr.io/vic2ray/playdriver:latest
 ```
@@ -135,7 +137,9 @@ docker run --rm -p 6080:6080 -p 8000:8000 \
 
 ### 和绕过服务的关系
 
-绕过服务**原样挂在同一个端口的 `/` 上**，所以 `http://localhost:8000/https://example.com` 照旧可用，`/cookies` 只是额外多出来的一条路由。代码上就是 `resident/service.py` 组装了一个 app：先注册 `/cookies`，再把整个绕过服务挂到 `/`。
+绕过服务**原样挂在同一个端口的 `/` 上**，所以 `http://localhost:8000/https://example.com` 照旧可用，`/vnc`、`/cookies`、`/adbs` 只是额外多出来的三条。代码上就是 `scripts/routes.py` 往 app 上装自家接口，`resident/service.py` 最后再把整个绕过服务挂到 `/`。
+
+**顺序是这个项目唯一的硬约束**：绕过服务的路由是 `/{target:path}` 全捕获，任何在它之后注册的路径都会被当成目标地址去转发（`/cookies` 会被理解成目标 `cookies`，`/adbs/api/devices` 会被理解成目标 `/adbs/api/devices`）。所以所有自家接口都集中在 `routes.py` 一个文件里、先于 `mount("/")` 装配，散落到各个包里最容易漏。
 
 两边的浏览器是分开的：
 
@@ -169,14 +173,14 @@ curl "http://localhost:8000/cookies?domain=example.com"
 - 连续 5 次重开失败（比如 profile 被别的进程锁着）→ 停止重试，容器和 HTTP 服务仍在运行，重启容器可恢复
 - 浏览器起不来（比如 Chrome 缺依赖）→ 不影响转发服务，`/cookies` 返回 `503` 并在日志里说明原因
 
-### 只要转发服务
+### 摘掉常驻浏览器
 
 ```sh
 docker run --rm -p 8000:8000 ghcr.io/vic2ray/playdriver:latest \
   python -u scripts/run.py --no-browser
 ```
 
-不起浏览器、不占那 200–400MB，其余完全一样（`/cookies` 返回 `503` 并说明原因）。这不是另一种模式，只是把浏览器那个组件摘掉，端口和 app 结构都不变。
+不起浏览器、不占那 200–400MB，`/cookies` 返回 `503` 并说明原因；转发和 `/adbs` 照常。这不是另一种模式，只是把浏览器那个组件摘掉，端口和 app 结构都不变。
 
 ### 环境变量
 
@@ -187,6 +191,124 @@ docker run --rm -p 8000:8000 ghcr.io/vic2ray/playdriver:latest \
 | `RESIDENT_RETRY_COOLDOWN` | 同一地址过验证失败后多久内不再重试（秒） | `30` |
 
 端口、代理、Chrome 路径、过挑战超时都复用绕过服务的配置：`BYPASS_PORT`、`PROXY`、`CHROME_PATH`、`BYPASS_SOLVE_TIMEOUT`。
+
+## 桌面画面（/vnc）
+
+`http://localhost:8000/vnc` 就是 noVNC 桌面，不用再换端口去看 6080。打开即连（落地页带 `autoconnect=1&resize=scale`），画面跟着窗口缩放。
+
+### 为什么不是"把静态文件挂上去"这么简单
+
+noVNC 是**两样东西**：
+
+1. `/usr/share/novnc` 里的一堆静态文件（`vnc.html` + `app/` + `core/` + `vendor/`）；
+2. 一条 **WebSocket 通道** —— 前端把 RFB 字节塞进 WS 二进制帧发出来，服务端再转成裸 TCP 喂给 x11vnc。
+
+`websockify` 干的就是第 2 件事（顺手用 `--web` 兼职第 1 件）。只挂静态文件的话，页面能打开，点 Connect 之后前端会去连 `<当前页面所在目录>/websockify`（noVNC 的默认 `path` 是相对路径），没有这条 WS 路由就永远停在 "Connecting"。所以 `scripts/vnc.py` 里除了 `StaticFiles`，还写了一个 WS ↔ TCP 桥，直接对 `127.0.0.1:5900`：一帧二进制 = 一段裸 RFB 字节，双向对拷即可，不需要 base64（老客户端才走 base64 文本帧，也顺手兼容了）。
+
+两条装配顺序上的硬约束，都写进 `vnc.py` 的注释了：
+
+- **WS 路由必须早于 `Mount`**。`Mount("/vnc", StaticFiles)` 对 `/vnc/websockify` 也会给出 FULL 匹配，而 `StaticFiles.__call__` 第一行是 `assert scope["type"] == "http"`，WS 请求进去直接 AssertionError。Starlette 遇到 FULL 立刻收工，谁先注册谁生效。
+- **`/vnc` 自己接不住**。`Mount` 的正则是 `^/vnc/(?P<path>.*)$`，`/vnc` 不匹配，会掉进转发全捕获被当成目标地址 `vnc` 返回 400。所以补一条 307 重定向到落地页。
+
+### 环境变量
+
+| 变量 | 说明 | 默认 |
+| --- | --- | --- |
+| `NOVNC_DIR` | noVNC 静态文件目录 | `/usr/share/novnc` |
+| `VNC_TARGET` | 桥接目标（裸 RFB TCP） | `127.0.0.1:5900` |
+| `NOVNC_LANDING` | 落地页（相对 `/vnc`） | `vnc.html?autoconnect=1&resize=scale` |
+
+宿主机上跑（没有 `/usr/share/novnc`）时 `/vnc` 自动降级成 `503` 并说明原因，不影响转发和 `/adbs`。想换成极简界面就把 `NOVNC_LANDING` 设成 `vnc_lite.html?autoconnect=1&resize=scale`。
+
+### 要不要顺手砍掉 6080
+
+`start.sh` 里的 `websockify --web /usr/share/novnc 6080 localhost:5900` 一行没动，所以 6080 那条老路照旧能用，只是**不需要**再用了。
+
+**建议先留着**，因为 `/vnc` 是 `run.py` 里的一条路由：一旦你用「传入命令」的方式跑自己的脚本（[运行自己的脚本](#运行自己的脚本)），默认命令被替换，`run.py` 根本没启动，`/vnc` 自然不存在 —— 这时看画面还是只能靠 `start.sh` 里那个独立的 websockify。真确定永远只用默认命令，再删：去掉 `start.sh` 里那行 websockify、`Dockerfile` 的 `EXPOSE` 去掉 `6080`、`docker run` 不再 `-p 6080:6080`。`5900` 也只是给宿主机 VNC 客户端留的，纯网页使用同样可以不映射。
+
+## 手机画面监控（/adbs）
+
+挂在同一个端口的 `/adbs` 上，把 adb server 里的设备画面推成 MJPEG，并且能远程操作。**它不去建立连接**——设备表是从 adb server 只读来的（`host:devices` / `host:track-devices`），u2、kumuapp、vkapp 谁把设备连上，这里就出现谁，`connect` / `disconnect` / `forward` 一概不碰。
+
+打开 `http://localhost:8000/adbs` 就能用：
+
+| 操作 | 怎么做 |
+| --- | --- |
+| 看某台设备 | 点网格里的卡片，进入单机模式，画面撑满高度 |
+| 点击 / 长按 | 在画面上点 / 按住 0.5 秒以上 |
+| 滑动 | 按住拖 |
+| 返回 / Home / 最近 / 电源 | 屏幕右侧竖排的按钮 |
+| 打字 | **直接敲键盘**，不用点任何输入框（中文也行） |
+| 退出 | `Esc` 或右上角「✕ 退出」 |
+
+打字是停顿 250ms 自动发一批，回车先发文字再敲回车键。触屏设备上不抢焦点（会弹软键盘挡住画面），改用底部「键盘」按钮手动叫出。
+
+### 两条输入通道
+
+不是二选一，是按实测延迟分工：
+
+| 操作 | 走哪条 | 实测 |
+| --- | --- | --- |
+| 点击 / 滑动 / 按键 | `adb shell input` | 43 / 353 / 39 ms |
+| 文字 | 设备上 ATX agent 的剪贴板 `setClipboard` + `pasteClipboard` | ~40–145 ms |
+
+agent 的 `click` / `swipe` / `pressKey` 慢 3~25 倍，因为 uiautomator 的 `InteractionController` 每次注入前后都 `waitForIdle()`。反过来，`input text` **只认 ASCII**，中文和 emoji 根本打不出来，必须走剪贴板粘贴。
+
+### 设备上的 agent
+
+抓帧和打字都依赖设备上的 ATX agent（uiautomator2 server，端口 `9008`）。它是 `app_process` 起的子进程，**谁起的谁负责活着**——连接一断它就退出。所以：
+
+- 宿主机上 u2 脚本（kumuapp / vkapp）跑着的时候，直接用它那条；
+- 没有的话 uni2ui 自己拉一个（命令和 u2 内部完全一致，不依赖 `uiautomator2` 这个包）；
+- 前提是设备上已经有 `/data/local/tmp/u2.jar`（装过一次 u2 就有），没有就退回 `screencap`，画面掉到约 1fps。
+
+一个进程只持有一条 agent 连接，抓帧和打字共用。
+
+### 资源占用
+
+实测（单台设备）：
+
+| 状态 | 主机 CPU | 内存 |
+| --- | --- | --- |
+| 没有设备，纯挂着 | 0.00% | 60 MB |
+| 设备在线，没人看 | 0.00% | 60 MB |
+| 正在推流（15fps） | 1.9–2.8% 单核 | 61 MB |
+
+关掉页面 30 秒后自动停止抓帧、回落到 0%。真正的成本是带宽：单台约 1.2–2.2 MB/s，而且**网格模式会把所有在线设备同时推流**。
+
+### 只要转发服务
+
+```sh
+docker run --rm -p 8000:8000 ghcr.io/vic2ray/playdriver:latest \
+  python -u scripts/run.py --no-browser --no-ui
+```
+
+四个组件的开关，默认全开（`/vnc` 是桌面画面，其余三个各对应一块能力）：
+
+| 命令 | 转发 | 桌面画面 `/vnc` | 常驻浏览器 | 手机画面 `/adbs` |
+| --- | --- | --- | --- | --- |
+| `run.py` | ✓ | ✓ | ✓ | ✓ |
+| `run.py --no-vnc` | ✓ | | ✓ | ✓ |
+| `run.py --no-browser` | ✓ | ✓ | | ✓ |
+| `run.py --no-ui` | ✓ | ✓ | ✓ | |
+| `run.py --no-browser --no-ui` | ✓ | ✓ | | |
+| `run.py --no-browser --no-ui --no-vnc` | ✓ | | | |
+
+少哪个组件就少哪块能力，端口和 app 结构完全不变：`/vnc` 返回 `503`（`--no-vnc`），`/cookies` 返回 `503`（`--no-browser`），`/adbs` 也返回 `503` 并说明是 `--no-ui` 关掉的。
+
+### 环境变量
+
+| 变量 | 说明 | 默认 |
+| --- | --- | --- |
+| `UNI2UI_ADB_HOST` | adb server 地址 | `127.0.0.1` |
+| `UNI2UI_ADB_PORT` | adb server 端口 | `5037` |
+| `UNI2UI_FPS` | 推流帧率 | `15` |
+| `UNI2UI_JPEG_QUALITY` | JPEG 质量 | `60` |
+| `UNI2UI_TOKEN` | 访问口令，设了之后所有接口要带 `?token=` | 空（不校验） |
+| `UNI2UI_PREWARM` | 设备上线就提前拉起 agent | `1` |
+| `UNI2UI_IDLE_TIMEOUT` | 没人看多久后停抓帧（秒） | `30` |
+
+容器里要真能看到设备，还需要：装 adb 客户端、能连到宿主机的 adb server（`--network host`，或 `ADB_SERVER_SOCKET=tcp:host.docker.internal:5037`）、设备上已有 `u2.jar`。这些不做也不影响启动——页面会空着，CPU 0%，只是没有设备。
 
 **代理必须是同一个。** `cf_clearance` 绑定出口 IP，常驻浏览器和绕过服务走不同出口的话，这边过完的 cookie 到那边就用不了。
 
@@ -220,7 +342,7 @@ docker run --rm -p 6080:6080 `
 
 容器默认工作目录是 `/app`。自有脚本应使用可视模式启动 Chrome（`headless=False`），并连接容器的 `DISPLAY=:99`。
 
-注意这个挂载会**整个覆盖**镜像自带的 `scripts/`（里面有入口 `run.py` 和 `bypass/`、`resident/` 两个包），所以这种方式下只能跑你自己的脚本。想保留默认命令，把宿主机目录挂到别的路径，例如 `-v "$PWD/scripts:/app/mine"` 再跑 `python -u mine/my_script.py`。
+注意这个挂载会**整个覆盖**镜像自带的 `scripts/`（里面有入口 `run.py`、`vnc.py` 和 `bypass/`、`resident/`、`uni2ui/` 三个包），所以这种方式下只能跑你自己的脚本。想保留默认命令，把宿主机目录挂到别的路径，例如 `-v "$PWD/scripts:/app/mine"` 再跑 `python -u mine/my_script.py`。
 
 镜像内的 Playwright 系驱动是 `patchright`（Playwright 的无检测分支，API 与 Playwright 一致，只有导入路径不同），镜像**不包含** `playwright` 包，`from playwright.sync_api import ...` 会直接 `ImportError`。示例：
 
@@ -254,25 +376,27 @@ with sync_playwright() as p:
 
 ```sh
 docker run --rm -it \
-  -p 6080:6080 -p 8000:8000 \
+  -p 8000:8000 \
   -v "$PWD/scripts:/app/scripts" \
   ghcr.io/vic2ray/playdriver:latest bash
 ```
 
-在 shell 中可以手动运行 `python -u scripts/run.py`（转发 + 浏览器）或 `python -u scripts/run.py --no-browser`（只转发），也可以跑 `python -u scripts/my_script.py`。退出 shell 后容器停止并删除。
+在 shell 中可以手动运行 `python -u scripts/run.py`（四个组件全开）、`--no-browser`（不要浏览器）、`--no-ui`（不要画面监控）或 `--no-vnc`（不要桌面画面），也可以跑 `python -u scripts/my_script.py`。退出 shell 后容器停止并删除。
 
 ## 端口
 
-| 容器端口 | 用途 |
-| --- | --- |
-| `6080` | noVNC 网页入口 |
-| `5900` | 原始 VNC 连接（无密码）；仅在需要 VNC 客户端时映射 |
-| `8000` | 绕过服务 + `/cookies`（默认命令） |
+| 容器端口 | 用途 | 需要映射吗 |
+| --- | --- | --- |
+| `8000` | 绕过服务 + `/vnc` + `/cookies` + `/adbs`（默认命令） | **需要，只映射这一个就够** |
+| `6080` | noVNC 老入口（`websockify --web`），与 `/vnc` 内容相同 | 不需要 |
+| `5900` | 原始 VNC 连接（无密码） | 只在用宿主机 VNC 客户端时映射 |
+
+`/vnc` 里的 WebSocket 桥是服务进程自己去连 `127.0.0.1:5900`，所以宿主机完全不用碰 `5900`，容器也不需要 `--network host`。
 
 如果只在本机访问，建议限制宿主机绑定地址，避免把无密码 VNC 和免鉴权的绕过服务暴露到外部网络：
 
 ```sh
-docker run --rm -p 127.0.0.1:6080:6080 -p 127.0.0.1:8000:8000 \
+docker run --rm -p 127.0.0.1:8000:8000 \
   ghcr.io/vic2ray/playdriver:latest
 ```
 
@@ -280,7 +404,7 @@ docker run --rm -p 127.0.0.1:6080:6080 -p 127.0.0.1:8000:8000 \
 
 容器启动时只等待 Xvfb（`:99`）就绪，随后立即执行命令；x11vnc 与 noVNC 在后台并行拉起，不阻塞命令。Xvfb 失败会立即退出，其余服务若未在 10 秒内就绪，只补一行错误、不影响命令执行。
 
-所有错误都以 `[start.sh] error:` 开头输出到 stderr；启动成功时不输出任何日志。绕过服务同理，成功请求不打印日志，只有出错才输出。常驻浏览器启动时会打一行 `[resident] 浏览器已启动`，之后只在过验证、关窗重开这类事件上说话。
+所有错误都以 `[start.sh] error:` 开头输出到 stderr；启动成功时不输出任何日志。绕过服务同理，成功请求不打印日志，只有出错才输出。常驻浏览器启动时会打一行 `[resident] 浏览器已启动`，手机画面监控会打一行 `[uni2ui] 手机画面监控已启动，路径 /adbs`（`/vnc` 不额外打印，找不到 noVNC 静态文件时才 warning），之后都只在出错时说话（uni2ui 的日志被压在 `WARNING` 以上，info 级别全静音）。
 
 ## 输入脚本到标准输入
 
@@ -294,14 +418,21 @@ docker run --rm -i -p 6080:6080 \
 
 ## 代码结构
 
-进程入口只有一个：`scripts/run.py`，它和两个包平级。默认把绕过服务和常驻浏览器一起拉起，`--no-browser` 摘掉后者。
+进程入口只有一个：`scripts/run.py`。默认把四个组件一起拉起，`--no-browser` / `--no-ui` / `--no-vnc` 各摘掉一个。
 
 ```
 scripts/
-├── run.py        ← 唯一入口：python -u scripts/run.py [--no-browser]
+├── run.py        ← 唯一入口：python -u scripts/run.py [--no-browser] [--no-ui] [--no-vnc]
+├── routes.py     ← 自家接口的装配点（必须在 mount("/") 之前，见下）
+├── vnc.py        noVNC 桌面：静态文件 + WS ↔ TCP 桥
 ├── bypass/       纯转发服务，可独立运行
-└── resident/     常驻浏览器，依赖 bypass
+├── resident/     常驻浏览器，依赖 bypass
+└── uni2ui/       手机画面监控，独立于前两者
 ```
+
+`routes.py` 单独拎在顶层，不放进 `resident/`：它装的是**整个 app 的**自家接口（`/vnc`、`/cookies`、`/adbs`），跟"常驻浏览器"这个功能没关系。绕过服务的全捕获路由要求这些必须在 `mount("/")` 之前注册，集中在一个文件里才不容易漏。依赖方向是 `routes.py → resident / uni2ui / vnc`，三个包互不认识，也不认识 `routes.py`。
+
+`vnc.py` 也放顶层：它只依赖 FastAPI/Starlette 和一条 TCP 连接，不认识浏览器也不认识转发服务，谁都能单独拿去用。
 
 `bypass` 内部按职责分层，依赖单向（越往下越底层，不会反向引用）：
 
@@ -324,14 +455,28 @@ cookie 不对看 `inbound.py` / `creds.py`，报错信息看 `upstream.py`。
 
 ```
 scripts/resident/
-├── service.py    服务编排：起浏览器、起 watcher、组 app、拉起 uvicorn
-├── routes.py     /cookies 路由
+├── service.py    服务编排：起浏览器、起 watcher、起 uni2ui、组 app、拉起 uvicorn
 ├── watcher.py    挑战检测与过验证
 ├── browser.py    常驻浏览器的启动、关窗重开、cookie 读取
 └── config.py     本模式独有的配置（profile 目录、检测间隔、重开策略）
 ```
 
 常驻浏览器排查：窗口关掉没重开看 `browser.py` 的 `_supervise`，点了没自动过验证看 `watcher.py`，`/cookies` 返回不对看 `routes.py` 与 `browser.py` 的域过滤。
+
+`uni2ui` 谁也不依赖，可以单独跑（`python -m uni2ui.app`），内部依赖单向：
+
+```
+scripts/uni2ui/
+├── app.py        HTTP 路由 / 鉴权；create_app() 给 playdriver 用，main() 给独立运行用
+├── registry.py   设备表 + 抓帧器池 + agent 通道池
+├── control.py    点滑按键走 input，文字走 agent 剪贴板
+├── capture.py    抓帧，MJPEG 生成器
+├── agent.py      ATX agent 的探测 / 自拉起 / JSON-RPC（抓帧和打字共用一条连接）
+├── discovery.py  只读 adb 设备表
+└── config.py     环境变量（UNI2UI_*）
+```
+
+画面排查：卡在 1fps 看 `agent.py`（agent 没起来，退回 screencap），两台设备其实是同一台看 `registry.py` 的 `_merge`，点不准看前端 `imgPoint` 的坐标换算（`object-fit: contain` 的黑边），中文打不出去看 `control.py` 的剪贴板通道。
 
 ## 构建镜像
 

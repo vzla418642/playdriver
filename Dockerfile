@@ -30,7 +30,8 @@ EXPOSE 6080 5900 8000
 
 # 关键：start.sh 变 ENTRYPOINT，用户传什么就执行什么
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/start.sh"]
-# 默认：转发服务 + 常驻浏览器，同一个端口同时可用。
+# 默认：转发服务 + 常驻浏览器 + noVNC 桌面（/vnc）+ 手机画面监控（/adbs），
+# 同一个端口 8000 全部可用；6080 是 websockify 的老入口，留着但不必再用。
 # 只要转发（不起浏览器、省 200-400MB）：
-#   CMD ["python", "-u", "scripts/run.py", "--no-browser"]
+#   CMD ["python", "-u", "scripts/run.py", "--no-browser", "--no-ui"]
 CMD ["python", "-u", "scripts/run.py"]

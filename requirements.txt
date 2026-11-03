@@ -6,9 +6,14 @@ patchright
 
 # 安卓模拟器
 uiautomator2
+# uni2ui 直接用它跟 adb server 说话（u2 也会带进来，这里显式声明依赖）
+adbutils
 
 # scripts/bypass.py 绕过服务
 curl_cffi>=0.7
 fastapi>=0.100
 uvicorn>=0.27
+# /vnc 的 WS ↔ TCP 桥要它；uvicorn 裸装不带 WS 支持，缺了会报
+# "No supported WebSocket library detected"
+websockets>=12
 PyPasser[vision]>=1.1
