@@ -249,7 +249,7 @@ curl -sI http://localhost:6080/vnc.html | head -1   # 期望 200
 
 ## 手机画面监控（/adbs）
 
-挂在同一个端口的 `/adbs` 上，把 adb server 里的设备画面推成 MJPEG，并且能远程操作。**它不去建立连接**——设备表是从 adb server 只读来的（`host:devices` / `host:track-devices`），u2、kumuapp、vkapp 谁把设备连上，这里就出现谁，`connect` / `disconnect` / `forward` 一概不碰。
+挂在同一个端口的 `/adbs` 上，把 adb server 里的设备画面推成 MJPEG，并且能远程操作。**自动发现是纯只读的**——设备表从 adb server 来（`host:devices` / `host:track-devices`），u2、kumuapp、vkapp 谁把设备连上，这里就出现谁，`forward` 一概不碰。需要自己连一台时，右上角填地址、或用 `?address=` 显式触发（见[主动连接](#主动连接)），**服务自己从不替别人做决定**。
 
 打开 `http://localhost:8000/adbs` 就能用：
 
@@ -261,8 +261,18 @@ curl -sI http://localhost:6080/vnc.html | head -1   # 期望 200
 | 返回 / Home / 最近 / 电源 | 屏幕右侧竖排的按钮 |
 | 打字 | **直接敲键盘**，不用点任何输入框（中文也行） |
 | 退出 | `Esc` 或右上角「✕ 退出」 |
+| 主动连一台设备 | 右上角填 `host` 或 `host:port` 点「连接」；或直接开 `?address=192.168.1.5:5555` |
 
 打字是停顿 250ms 自动发一批，回车先发文字再敲回车键。触屏设备上不抢焦点（会弹软键盘挡住画面），改用底部「键盘」按钮手动叫出。
+
+### 主动连接
+
+自动发现只看 adb server 的设备表，谁连的就认谁。需要自己连一台时：
+
+- **页面上**：右上角填 `192.168.1.5` 或 `192.168.1.5:5555`，点「连接」；不写端口就按 `5555` 补
+- **URL 上**：`?address=192.168.1.5:5555` —— 打开就连，连上后自动放大到那台设备（设备表是 adb 推送的，最多等 10 秒）
+
+对应接口：`POST /api/connect`、`POST /api/disconnect`，body `{"address": "..."}`。这是整个服务**唯一的写操作**，只由用户动作触发；自动发现那条路径依旧是纯只读。打错的地址会变成 `offline` 条目一直挂在表里，用 `POST /api/disconnect` 收拾。
 
 ### 两条输入通道
 

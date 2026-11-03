@@ -22,6 +22,18 @@
   .dot.on{background:var(--ok);box-shadow:0 0 0 3px rgba(63,185,80,.15)}
   #adb{color:var(--dim);font-size:12px}
   #count{color:var(--dim);font-size:12px;margin-left:auto}
+  /* 手动连接：host:port 进不去就补 5555，服务端还会再规范化一次 */
+  #add{display:flex;gap:6px;margin:0;align-items:center}
+  #add input{margin:0;padding:5px 8px;width:158px;font-size:12px;
+             background:var(--bg);border:1px solid var(--line);border-radius:6px;
+             color:var(--fg);font-family:inherit}
+  #add input:focus{outline:none;border-color:var(--dim)}
+  #add button{margin:0;padding:5px 10px;font-size:12px;border:1px solid var(--line);
+              border-radius:6px;background:transparent;color:var(--fg);cursor:pointer;
+              font-family:inherit}
+  #add button:hover{border-color:var(--dim)}
+  @media (max-width:700px){ #add input{width:112px} }
+  body.focus #add{display:none}
   .hint{color:var(--dim);font-size:12px}
   #close{display:none;margin-left:auto;padding:4px 10px;border-radius:6px;cursor:pointer;
          background:#2b2b2b;color:var(--fg);border:1px solid #3a4150;font-size:13px}
@@ -126,6 +138,10 @@
   <span class="dot" id="dot"></span>
   <span id="adb">连接中…</span>
   <span class="hint" id="hint">点画面放大 · 放大后可操作</span>
+  <form id="add" title="手动连接一台设备：host 或 host:port（端口默认 5555）">
+    <input id="addr" placeholder="192.168.1.5:5555" autocomplete="off" spellcheck="false">
+    <button type="submit">连接</button>
+  </form>
   <span id="count"></span>
   <button id="close" title="退出（Esc）">✕ 退出</button>
 </header>
@@ -530,9 +546,9 @@ async function poll() {
     emptyEl = document.createElement('div');
     emptyEl.className = 'empty';
     emptyEl.innerHTML =
-      '当前 adb 里没有设备。<br>等 u2 / kumuapp / vkapp 把设备连上，' +
-      '这里会自动出现，不用刷新。<br><br>' +
-      '手动验证：<code>adb devices</code>';
+      '当前 adb 里没有设备。<br>' +
+      'u2 / kumuapp / vkapp 连上的会自动出现；也可以在右上角填地址手动连接，' +
+      '或者直接打开 <code>?address=192.168.1.5:5555</code>。';
     grid.appendChild(emptyEl);
   } else if (tiles.size > 0 && emptyEl) {
     emptyEl.remove();
@@ -544,6 +560,58 @@ async function poll() {
 
 poll();
 setInterval(poll, 2000);
+
+// ---- 手动连接 ------------------------------------------------------------
+// 自动发现仍然是纯只读（只看 adb server 的设备表）；这里是唯一会真的
+// 触发 `adb connect` 的地方，而且只由用户动作驱动。
+const addForm = document.getElementById('add');
+const addrInput = document.getElementById('addr');
+
+async function connectAddress(address) {
+  return post(BASE + 'api/connect', {address});
+}
+
+addForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const address = addrInput.value.trim();
+  if (!address) return;
+  flash('正在连接 ' + address + ' …');
+  try {
+    await connectAddress(address);
+    addrInput.value = '';
+    flash('已连接 ' + address);
+    poll();
+  } catch (err) {
+    flash('连接失败：' + err.message, true);
+  }
+});
+
+// ?address=xxx：连上后直接放大到那台设备，省掉"再点一下"
+(async () => {
+  const wanted = new URLSearchParams(location.search).get('address');
+  if (!wanted) return;
+  addrInput.value = wanted;
+  try {
+    await connectAddress(wanted);
+  } catch (err) {
+    flash('连接 ' + wanted + ' 失败：' + err.message, true);
+    return;
+  }
+  // 设备表是 adb 推送的，连上不等于已经出现，等一会儿（最多 10 秒）。
+  // 用户可能没写端口，服务端补成了 5555，所以按前缀匹配。
+  const deadline = Date.now() + 10000;
+  while (Date.now() < deadline) {
+    const hit = [...tiles.keys()].find(
+      (s) => s === wanted || s.startsWith(wanted + ':'));
+    if (hit) {
+      if (focusSerial === null) toggleFocus(hit);
+      flash('已连接 ' + hit);
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 400));
+  }
+  flash('已连接，但设备表里还没出现 ' + wanted, true);
+})();
 </script>
 </body>
 </html>

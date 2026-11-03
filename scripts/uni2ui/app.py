@@ -26,6 +26,8 @@ import sys
 from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
+from adbutils.errors import AdbError
+
 from . import config
 from .control import Controller, InputError
 from .discovery import Discovery
@@ -61,6 +63,32 @@ def build_app(registry: Registry) -> FastAPI:
     def api_devices(token: str = Query("")):
         auth(token)
         return registry.snapshot()
+
+    # 主动连接 / 断开。**只有用户点了才会走到这里**，自动发现依旧只读设备表。
+    # 连接结果靠 track_devices 推送回来，所以这里不等设备出现，直接返回 adb 的原话。
+    @app.post("/api/connect")
+    def api_connect(payload: dict = Body(...), token: str = Query("")):
+        auth(token)
+        address = str(payload.get("address") or "")
+        try:
+            reply = registry.discovery.connect(address)
+        except ValueError as exc:
+            raise HTTPException(400, _detail(exc)) from exc
+        except AdbError as exc:
+            raise HTTPException(502, f"adb 连不上：{exc}") from exc
+        return {"ok": True, "address": address.strip(), "reply": reply}
+
+    @app.post("/api/disconnect")
+    def api_disconnect(payload: dict = Body(...), token: str = Query("")):
+        auth(token)
+        address = str(payload.get("address") or "")
+        try:
+            reply = registry.discovery.disconnect(address)
+        except ValueError as exc:
+            raise HTTPException(400, _detail(exc)) from exc
+        except AdbError as exc:
+            raise HTTPException(502, f"adb 断开失败：{exc}") from exc
+        return {"ok": True, "address": address.strip(), "reply": reply}
 
     @app.get("/api/{serial}/info")
     def api_info(serial: str, token: str = Query("")):
