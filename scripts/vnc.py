@@ -8,14 +8,21 @@
 
 `websockify` 干的就是第 2 件事（它顺手用 `--web` 兼职第 1 件）。
 **只挂静态文件是不够的**：页面能打开，点 Connect 之后前端会去连
-`<当前页面所在目录>/websockify`（noVNC 的默认 `path` 是相对路径），
-没这条 WS 路由就永远停在 "Connecting"。所以这里除了 StaticFiles，还自己
-写了个 WS ↔ TCP 桥，直接对 `127.0.0.1:5900`。协议本身没有魔法：一帧
+`<站点根>/websockify`（noVNC 把 `path` 拼在根上，不跟页面目录走，见下面
+第零条），没这条 WS 路由就永远停在 "Connecting"。所以这里除了 StaticFiles，
+还自己写了个 WS ↔ TCP 桥，直接对 `127.0.0.1:5900`。协议本身没有魔法：一帧
 二进制 = 一段裸 RFB 字节，双向对拷即可。现代 noVNC 用
 `binaryType = 'arraybuffer'` 发原始字节，只有老客户端才走 base64 文本帧，
 这里顺手兼容了。
 
-## 两条装配顺序上的坑（都踩过）
+## 三条坑（都踩过）
+
+**零、noVNC 不知道自己在子路径下。** 它拼地址的方式是 `url += '/' + path`
+（`vnc.html` / `vnc_lite.html` 都一样，`path` 默认 `'websockify'`），**永远
+钉在站点根上**。页面在 `/vnc/vnc.html`，它照样去连 `/websockify`，然后落进
+bypass 的全捕获被拒 —— 线上表现就是 `WebSocket /websockify 403`。所以落地页
+必须带 `?path=vnc/websockify`（不能带前导斜杠，会拼成 `//vnc/websockify`），
+并且给根上的 `/websockify` 留一条别名兜底。
 
 **一、WS 路由必须早于 `Mount`。** `Mount("/vnc", StaticFiles)` 对
 `/vnc/websockify` 也会给出 FULL 匹配（前缀匹配后把剩余路径交给子 app），
@@ -55,7 +62,8 @@ log = logging.getLogger("playdriver.vnc")
 PREFIX = "/vnc"
 DEFAULT_STATIC = "/usr/share/novnc"
 DEFAULT_TARGET = "127.0.0.1:5900"
-# 落地页：autoconnect 省掉点 Connect，resize=scale 让画面跟着窗口缩放
+# 落地页：autoconnect 省掉点 Connect，resize=scale 让画面跟着窗口缩放。
+# `path=` 由 mount() 自动补（noVNC 不知道自己在子路径下，见下面的说明）。
 DEFAULT_LANDING = "vnc.html?autoconnect=1&resize=scale"
 
 
@@ -176,13 +184,30 @@ def mount(
 
     host, port = _split_target(target)
 
+    # noVNC 拼 WebSocket 地址的方式是 `url += '/' + path`（`vnc.html` 和
+    # `vnc_lite.html` 一模一样，`path` 默认 `'websockify'`）——**永远钉在站点
+    # 根上，不跟页面所在目录走**。页面在 `/vnc/vnc.html`，它照样去连
+    # `/websockify`，落进 bypass 全捕获被拒 → 403。所以必须显式把路径告诉它。
+    # 注意这里不能带前导斜杠：带了会拼成 `//vnc/websockify`。
+    ws_path = f"{prefix.strip('/')}/websockify"
+    handler = _make_handler(host, port)
+
     # ① WS 桥 —— 必须早于下面的 Mount，否则被 StaticFiles 吃掉（见模块 docstring）
-    app.add_api_websocket_route(f"{prefix}/websockify", _make_handler(host, port), name="vnc-ws")
+    app.add_api_websocket_route(f"/{ws_path}", handler, name="vnc-ws")
+
+    # 兜底别名：直接打开 `/vnc/vnc.html`（不带 ?path=）时，noVNC 仍然会去连根上
+    # 的 `/websockify`。给它一条同名路由，省得用户手输地址就撞 403。
+    if ws_path != "websockify":
+        app.add_api_websocket_route("/websockify", handler, name="vnc-ws-alias")
 
     # ② 落地页重定向 —— /vnc 和 /vnc/ 都不匹配 Mount 的正则，得自己接住
+    landing_url = f"{prefix}/{landing}"
+    if "path=" not in landing:
+        landing_url += ("&" if "?" in landing else "?") + f"path={ws_path}"
+
     async def _landing(request: Request) -> RedirectResponse:
         extra = f"&{request.url.query}" if request.url.query else ""
-        return RedirectResponse(f"{prefix}/{landing}{extra}", status_code=307)
+        return RedirectResponse(f"{landing_url}{extra}", status_code=307)
 
     for path in (prefix, prefix + "/"):
         app.add_api_route(path, _landing, methods=["GET"], include_in_schema=False)

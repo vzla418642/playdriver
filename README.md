@@ -203,10 +203,11 @@ noVNC 是**两样东西**：
 1. `/usr/share/novnc` 里的一堆静态文件（`vnc.html` + `app/` + `core/` + `vendor/`）；
 2. 一条 **WebSocket 通道** —— 前端把 RFB 字节塞进 WS 二进制帧发出来，服务端再转成裸 TCP 喂给 x11vnc。
 
-`websockify` 干的就是第 2 件事（顺手用 `--web` 兼职第 1 件）。只挂静态文件的话，页面能打开，点 Connect 之后前端会去连 `<当前页面所在目录>/websockify`（noVNC 的默认 `path` 是相对路径），没有这条 WS 路由就永远停在 "Connecting"。所以 `scripts/vnc.py` 里除了 `StaticFiles`，还写了一个 WS ↔ TCP 桥，直接对 `127.0.0.1:5900`：一帧二进制 = 一段裸 RFB 字节，双向对拷即可，不需要 base64（老客户端才走 base64 文本帧，也顺手兼容了）。
+`websockify` 干的就是第 2 件事（顺手用 `--web` 兼职第 1 件）。只挂静态文件的话，页面能打开，点 Connect 之后永远停在 "Connecting"。所以 `scripts/vnc.py` 里除了 `StaticFiles`，还写了一个 WS ↔ TCP 桥，直接对 `127.0.0.1:5900`：一帧二进制 = 一段裸 RFB 字节，双向对拷即可，不需要 base64（老客户端才走 base64 文本帧，也顺手兼容了）。
 
-两条装配顺序上的硬约束，都写进 `vnc.py` 的注释了：
+三条坑，都写进 `vnc.py` 的注释了：
 
+- **noVNC 不知道自己在子路径下**（这条最容易漏，线上表现是 `WebSocket /websockify 403`）。它拼地址的代码是 `url += '/' + path`，`path` 默认 `'websockify'` —— **永远钉在站点根上，不跟页面目录走**。页面在 `/vnc/vnc.html`，它照样去连 `/websockify`，落进转发全捕获被拒。所以落地页必须带 `?path=vnc/websockify`（**不能带前导斜杠**，会拼成 `//vnc/websockify`），同时给根上的 `/websockify` 留一条别名兜底，这样手输 `/vnc/vnc.html` 也能连上。
 - **WS 路由必须早于 `Mount`**。`Mount("/vnc", StaticFiles)` 对 `/vnc/websockify` 也会给出 FULL 匹配，而 `StaticFiles.__call__` 第一行是 `assert scope["type"] == "http"`，WS 请求进去直接 AssertionError。Starlette 遇到 FULL 立刻收工，谁先注册谁生效。
 - **`/vnc` 自己接不住**。`Mount` 的正则是 `^/vnc/(?P<path>.*)$`，`/vnc` 不匹配，会掉进转发全捕获被当成目标地址 `vnc` 返回 400。所以补一条 307 重定向到落地页。
 
@@ -218,7 +219,11 @@ noVNC 是**两样东西**：
 | `VNC_TARGET` | 桥接目标（裸 RFB TCP） | `127.0.0.1:5900` |
 | `NOVNC_LANDING` | 落地页（相对 `/vnc`） | `vnc.html?autoconnect=1&resize=scale` |
 
-宿主机上跑（没有 `/usr/share/novnc`）时 `/vnc` 自动降级成 `503` 并说明原因，不影响转发和 `/adbs`。想换成极简界面就把 `NOVNC_LANDING` 设成 `vnc_lite.html?autoconnect=1&resize=scale`。
+宿主机上跑（没有 `/usr/share/novnc`）时 `/vnc` 自动降级成 `503` 并说明原因，不影响转发和 `/adbs`。
+
+`path=` 由 `mount()` 自动补到 `NOVNC_LANDING` 后面，不用自己写。想换成极简界面（没有侧边栏，只剩画面）就设 `NOVNC_LANDING=vnc_lite.html?scale=true` —— 注意 `vnc_lite.html` 的参数是 `scale=true`（不是 `resize=scale`），而且它加载即连，没有 `autoconnect` 开关。
+
+日志里那条 `GET /vnc/package.json 404` 是浏览器扩展在探测版本，noVNC 本身不依赖它，可以不管。
 
 ### 要不要顺手砍掉 6080
 
