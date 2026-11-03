@@ -17,7 +17,7 @@ docker run --rm -p 8000:8000 \
 - `http://localhost:8000/vnc` —— noVNC 桌面，里面已经有一个开好的 Chrome，地址栏随便输（打开即连，画面跟着窗口缩放）
 - `http://localhost:8000` —— 绕过服务：自述页面、转发、`/cookies` 都在这个端口上
 - `http://localhost:8000/adbs` —— 手机画面监控台：adb 里连着的设备画面 + 点滑按键 / 打字
-- `http://localhost:6080` —— 同一个桌面的老入口（`websockify --web`），还留着，但可以不用了
+- `http://localhost:6080` —— 同一个桌面的老入口（`websockify --web`），可以不用，但**进程不能删**（`/vnc` 的 WS 就是反代到它）
 - 页面停在 Cloudflare 拦截页上时，几秒内自动过掉，不用你点复选框
 
 `-v playdriver-profile:/data/profile` 是浏览器 profile 的落盘位置，挂出来登录态才能跨容器保留；不挂也能跑，只是容器删了 cookie 就没了。
@@ -196,40 +196,56 @@ docker run --rm -p 8000:8000 ghcr.io/vic2ray/playdriver:latest \
 
 `http://localhost:8000/vnc` 就是 noVNC 桌面，不用再换端口去看 6080。打开即连（落地页带 `autoconnect=1&resize=scale`），画面跟着窗口缩放。
 
-### 为什么不是"把静态文件挂上去"这么简单
+### 怎么实现的：静态文件自己发，WebSocket 甩给 6080
 
 noVNC 是**两样东西**：
 
 1. `/usr/share/novnc` 里的一堆静态文件（`vnc.html` + `app/` + `core/` + `vendor/`）；
-2. 一条 **WebSocket 通道** —— 前端把 RFB 字节塞进 WS 二进制帧发出来，服务端再转成裸 TCP 喂给 x11vnc。
+2. 一条 **WebSocket 通道** —— 前端把 RFB 字节塞进 WS 帧发出来，服务端再转成裸 TCP 喂给 x11vnc。
 
-`websockify` 干的就是第 2 件事（顺手用 `--web` 兼职第 1 件）。只挂静态文件的话，页面能打开，点 Connect 之后永远停在 "Connecting"。所以 `scripts/vnc.py` 里除了 `StaticFiles`，还写了一个 WS ↔ TCP 桥，直接对 `127.0.0.1:5900`：一帧二进制 = 一段裸 RFB 字节，双向对拷即可，不需要 base64（老客户端才走 base64 文本帧，也顺手兼容了）。
+第 1 件用 `StaticFiles` 直接发。第 2 件**不自己实现**：`start.sh` 里的 `websockify --web /usr/share/novnc 6080 localhost:5900` 本来就在干这件事，而且它经过验证是好的。所以 `scripts/vnc.py` 只做一件事——把浏览器的 `/websockify` 反向代理到 `ws://127.0.0.1:6080/websockify`，字节原样搬运。
+
+自己写 WS ↔ TCP 桥那条路试过，代价是要自己承担 RFB 的全部语义和排障：上游一沉默就变成「WS 连上了、日志一片安静、画面全黑」，根本无从定位。**6080 好好的就别重造**，转发一层即可。
 
 三条坑，都写进 `vnc.py` 的注释了：
 
-- **noVNC 不知道自己在子路径下**（这条最容易漏，线上表现是 `WebSocket /websockify 403`）。它拼地址的代码是 `url += '/' + path`，`path` 默认 `'websockify'` —— **永远钉在站点根上，不跟页面目录走**。页面在 `/vnc/vnc.html`，它照样去连 `/websockify`，落进转发全捕获被拒。所以落地页必须带 `?path=vnc/websockify`（**不能带前导斜杠**，会拼成 `//vnc/websockify`），同时给根上的 `/websockify` 留一条别名兜底，这样手输 `/vnc/vnc.html` 也能连上。
+- **noVNC 不知道自己在子路径下**（这条最容易漏，线上表现是 `WebSocket /websockify 403`）。它拼地址的代码是 `url += '/' + path`，`path` 默认 `'websockify'` —— **永远钉在站点根上，不跟页面目录走**。页面在 `/vnc/vnc.html`，它照样去连 `/websockify`。所以根上必须有一条 `/websockify` 反代路由（`/vnc/websockify` 是同一路的别名，方便手工用 `?path=` 指定时也能连）。
 - **WS 路由必须早于 `Mount`**。`Mount("/vnc", StaticFiles)` 对 `/vnc/websockify` 也会给出 FULL 匹配，而 `StaticFiles.__call__` 第一行是 `assert scope["type"] == "http"`，WS 请求进去直接 AssertionError。Starlette 遇到 FULL 立刻收工，谁先注册谁生效。
 - **`/vnc` 自己接不住**。`Mount` 的正则是 `^/vnc/(?P<path>.*)$`，`/vnc` 不匹配，会掉进转发全捕获被当成目标地址 `vnc` 返回 400。所以补一条 307 重定向到落地页。
+
+### 画面出不来时看哪里
+
+转发是黑盒，所以它会自己说话（正常会话完全静默，只在出问题时打一行 `[vnc] WARNING`）：
+
+| 日志 | 含义 |
+| --- | --- |
+| `上游 ws://127.0.0.1:6080/websockify 连不上（ConnectionRefusedError…）` | 6080 上的 websockify 没起来（连带看 x11vnc） |
+| `会话中断：连上了但 5 秒没收到任何数据（上行 N 字节 / 下行 0 字节）` | WS 通了但不说话，上游不正常 |
+| `会话中断：上游断开（ConnectionClosed…）（上行 N / 下行 M）` | 会话建立过，中途断了 |
+
+上游不通时浏览器拿到的是**握手失败**（HTTP 403），不是"假装连上再莫名断开"——后者在 noVNC 里只会显示 `Connecting...` 然后静默重连，最难查。上游先断时用 **1011** 关闭，同样是为了让 noVNC 别再静默重连。
+
+先确认 6080 本身是好的（它和 `/vnc` 是同一路）：
+
+```sh
+curl -sI http://localhost:6080/vnc.html | head -1   # 期望 200
+```
 
 ### 环境变量
 
 | 变量 | 说明 | 默认 |
 | --- | --- | --- |
 | `NOVNC_DIR` | noVNC 静态文件目录 | `/usr/share/novnc` |
-| `VNC_TARGET` | 桥接目标（裸 RFB TCP） | `127.0.0.1:5900` |
+| `VNC_TARGET` | WS 反代目标（websockify 的 host:port，不是 x11vnc 的 5900） | `127.0.0.1:6080` |
 | `NOVNC_LANDING` | 落地页（相对 `/vnc`） | `vnc.html?autoconnect=1&resize=scale` |
 
-宿主机上跑（没有 `/usr/share/novnc`）时 `/vnc` 自动降级成 `503` 并说明原因，不影响转发和 `/adbs`。
-
-`path=` 由 `mount()` 自动补到 `NOVNC_LANDING` 后面，不用自己写。想换成极简界面（没有侧边栏，只剩画面）就设 `NOVNC_LANDING=vnc_lite.html?scale=true` —— 注意 `vnc_lite.html` 的参数是 `scale=true`（不是 `resize=scale`），而且它加载即连，没有 `autoconnect` 开关。
+宿主机上跑（没有 `/usr/share/novnc`）时 `/vnc` 自动降级成 `503` 并说明原因，不影响转发和 `/adbs`。想换成极简界面（没有侧边栏，只剩画面）就设 `NOVNC_LANDING=vnc_lite.html?scale=true` —— 注意 `vnc_lite.html` 的参数是 `scale=true`（不是 `resize=scale`），而且它加载即连，没有 `autoconnect` 开关。
 
 日志里那条 `GET /vnc/package.json 404` 是浏览器扩展在探测版本，noVNC 本身不依赖它，可以不管。
 
-### 要不要顺手砍掉 6080
+### 6080 现在是 `/vnc` 的依赖
 
-`start.sh` 里的 `websockify --web /usr/share/novnc 6080 localhost:5900` 一行没动，所以 6080 那条老路照旧能用，只是**不需要**再用了。
-
-**建议先留着**，因为 `/vnc` 是 `run.py` 里的一条路由：一旦你用「传入命令」的方式跑自己的脚本（[运行自己的脚本](#运行自己的脚本)），默认命令被替换，`run.py` 根本没启动，`/vnc` 自然不存在 —— 这时看画面还是只能靠 `start.sh` 里那个独立的 websockify。真确定永远只用默认命令，再删：去掉 `start.sh` 里那行 websockify、`Dockerfile` 的 `EXPOSE` 去掉 `6080`、`docker run` 不再 `-p 6080:6080`。`5900` 也只是给宿主机 VNC 客户端留的，纯网页使用同样可以不映射。
+`/vnc` 把 WS 反代到 6080，所以 **`start.sh` 里那行 websockify 不能删**。两个入口是同一份内容：静态文件同一份，WS 同一路。不映射 `-p 6080:6080` 也行（只在容器内部用），但进程得留着。
 
 ## 手机画面监控（/adbs）
 
@@ -313,7 +329,32 @@ docker run --rm -p 8000:8000 ghcr.io/vic2ray/playdriver:latest \
 | `UNI2UI_PREWARM` | 设备上线就提前拉起 agent | `1` |
 | `UNI2UI_IDLE_TIMEOUT` | 没人看多久后停抓帧（秒） | `30` |
 
-容器里要真能看到设备，还需要：装 adb 客户端、能连到宿主机的 adb server（`--network host`，或 `ADB_SERVER_SOCKET=tcp:host.docker.internal:5037`）、设备上已有 `u2.jar`。这些不做也不影响启动——页面会空着，CPU 0%，只是没有设备。
+容器里要真能看到设备，还需要：能连到一个 adb server（见下一节，`--network host` 或 `UNI2UI_ADB_HOST=host.docker.internal`）、设备上已有 `u2.jar`。这些不做也不影响启动——页面会空着，CPU 0%，只是没有设备。
+
+### 设备从哪来：只认 adb server，不认镜像和 u2
+
+**设备表是 adb server 进程的内存状态**，不落盘、不共享。`/adbs` 只读它的 `host:devices` / `host:track-devices`，所以"谁把设备连上的"完全不重要 —— u2、`adb connect`、kumuapp、你自己的脚本，只要连的是**同一个 adb server**，设备表里就会出现。
+
+反过来说：**两个容器 = 两个网络命名空间 = 两个 `127.0.0.1:5037` = 两张互不相干的设备表**。你在另一个容器里 `adb connect 192.168.1.5:5555`，这边看不到，除非让它们指向同一个 server：
+
+| 做法 | 怎么做 | 代价 |
+| --- | --- | --- |
+| 同一个容器（最省事） | 脚本和 `run.py` 一起跑，或干脆在容器里 `adb connect` | 无 |
+| 都走宿主机网络 | 两个容器都加 `--network host` | Linux 才行；端口不再隔离 |
+| 第二个容器指过来 | `-p 5037:5037`，对方设 `ANDROID_ADB_SERVER_HOST=<本容器>`（u2/adbutils）或 `ADB_SERVER_SOCKET=tcp:<本容器>:5037`（adb CLI） | server 必须以 `adb -a` 启动（默认只听 `127.0.0.1`） |
+| 本容器指向宿主机 | `UNI2UI_ADB_HOST=host.docker.internal`（或宿主机 IP） | 宿主机 server 也要 `-a` |
+
+三个环境变量别混：**uni2ui 只认 `UNI2UI_ADB_HOST` / `UNI2UI_ADB_PORT`**（它显式传 `AdbClient(host, port)`，不走环境变量默认值）；u2 / adbutils 认 `ANDROID_ADB_SERVER_HOST` / `ANDROID_ADB_SERVER_PORT`；`adb` 命令行认 `ADB_SERVER_SOCKET`。
+
+**还有个前提：镜像里没有任何东西会启动 adb server。** Dockerfile 没装 `adb` 包，`adbutils` 只连不起（没有 start-server 接口，只有 `server_kill`），u2 同理。所以容器里得先有人起一次，可以直接用 adbutils 自带的二进制：
+
+```sh
+$(python -c "import adbutils; print(adbutils.adb_path())") start-server
+# 或者对外暴露，让别的容器连进来：
+$(python -c "import adbutils; print(adbutils.adb_path())") -a nodaemon server
+```
+
+没起 server 时 `/adbs` 页面是空的，日志里会周期性出现 `track_devices 中断（ConnectionRefusedError...），Ns 后重连` —— 这是退避重连，不是崩了。
 
 **代理必须是同一个。** `cf_clearance` 绑定出口 IP，常驻浏览器和绕过服务走不同出口的话，这边过完的 cookie 到那边就用不了。
 
@@ -393,7 +434,7 @@ docker run --rm -it \
 | 容器端口 | 用途 | 需要映射吗 |
 | --- | --- | --- |
 | `8000` | 绕过服务 + `/vnc` + `/cookies` + `/adbs`（默认命令） | **需要，只映射这一个就够** |
-| `6080` | noVNC 老入口（`websockify --web`），与 `/vnc` 内容相同 | 不需要 |
+| `6080` | noVNC 老入口（`websockify --web`），也是 `/vnc` 的 WS 上游 | 不需要映射，但容器内必须留着 |
 | `5900` | 原始 VNC 连接（无密码） | 只在用宿主机 VNC 客户端时映射 |
 
 `/vnc` 里的 WebSocket 桥是服务进程自己去连 `127.0.0.1:5900`，所以宿主机完全不用碰 `5900`，容器也不需要 `--network host`。
