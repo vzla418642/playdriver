@@ -5,21 +5,24 @@ async def main():
     browser = await uc.start(
         headless=False,
         no_sandbox=True,
-        browser_executable_path="/usr/bin/google-chrome",
+        # browser_executable_path="/usr/bin/google-chrome",
         browser_args=[
-            '--disable-dev-shm-usage',
-            '--start-maximized',
-            '--disable-blink-features=AutomationControlled'
+            # '--disable-dev-shm-usage',
+            # '--start-maximized',
+            # '--disable-blink-features=AutomationControlled'
+            '--proxy-server=http://192.168.51.55:7890'
         ]
     )
 
     # 2. 打开 example.com
-    tab = await browser.get("https://example.com", new_tab=True, new_window=False)
+    # tab = await browser.get("https://example.com", new_tab=True, new_window=False)
+    # https://www.google.com/recaptcha/api2/demo
+    tab = await browser.get("https://2captcha.com/demo/recaptcha-v2", new_tab=True, new_window=False)
     print(f"[test.py] 已打开: {tab.url}")
 
     # 3. 静默等待30秒，你去 6080 就能看到画面
     print("[test.py] 等待30秒...")
-    await tab.sleep(30)
+    await tab.sleep(300)
 
     # 4. 关闭
     print("[test.py] 关闭浏览器")
