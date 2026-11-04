@@ -23,6 +23,11 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
+# 构建时下载并验证 reCAPTCHA V2 默认语音模型；Vosk 解压后自动删除 zip。
+# 默认 root 用户的缓存目录：/root/.cache/vosk/vosk-model-small-en-us-0.15。
+# 单独成层，修改业务脚本不会重新下载；失败直接终止构建。
+RUN python -c "from pathlib import Path; from vosk import Model; name = 'vosk-model-small-en-us-0.15'; model = Model(model_name=name); cache = Path.home() / '.cache/vosk'; assert (cache / name / 'am/final.mdl').is_file(); assert not (cache / (name + '.zip')).exists()"
+
 COPY start.sh /usr/local/bin/start.sh
 COPY scripts/ ./scripts/
 RUN chmod +x /usr/local/bin/start.sh
