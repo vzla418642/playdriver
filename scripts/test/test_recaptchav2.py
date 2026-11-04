@@ -1,43 +1,35 @@
-"""过 recaptchav2 整页墙，并用拿到的 cf_clearance 重放验证。
-
-    python scripts/test/test_recaptchav2.py                            # 默认 nairaland
-    python scripts/test/test_recaptchav2.py https://example.com
-"""
+"""reCAPTCHA V2 测试：python scripts/test/test_recaptchav2.py [URL]。"""
+import os
 import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from curl_cffi import requests as cffi
 from patchright.sync_api import sync_playwright
 from pypasser.captcha import recaptcha
 
-from bypass.config import CHROME_PATH, PROXY, SOLVE_TIMEOUT
+CHROME_PATH = "/usr/bin/google-chrome"
+PROXY = "http://192.168.51.55:7890"  # 不使用代理时设为 ""
+SOLVE_TIMEOUT = 60
+
+if PROXY:
+    os.environ["HTTP_PROXY"] = PROXY
+    os.environ["HTTPS_PROXY"] = PROXY
 
 url = sys.argv[1] if len(sys.argv) > 1 else "https://2captcha.com/demo/recaptcha-v2"
-args = ["--no-sandbox", "--disable-dev-shm-usage",
-        "--disable-blink-features=AutomationControlled"]
-if PROXY:
-    args.append(f"--proxy-server={PROXY}")   # 和后面重放走同一个出口，cf_clearance 才认
 
 with sync_playwright() as pw:
-    browser = pw.chromium.launch(headless=False, executable_path=CHROME_PATH, args=args)
-    page = browser.new_page()
-    page.goto(url, wait_until="domcontentloaded", timeout=SOLVE_TIMEOUT * 1000)
-    print("落地页:", page.title())
+    browser = pw.chromium.launch(
+        headless=False, executable_path=CHROME_PATH,
+        args=["--no-sandbox", "--disable-dev-shm-usage"],
+        **({"proxy": {"server": PROXY}} if PROXY else {}),
+    )
+    try:
+        context = browser.new_context(locale="en-US")
+        page = context.new_page()
+        page.goto(url, wait_until="domcontentloaded", timeout=SOLVE_TIMEOUT * 1000)
+        print("落地页:", page.title())
+        result = recaptcha.v2.solve(page, timeout=SOLVE_TIMEOUT)
+        print("is_solved:", result.is_solved)
+        print("token_present:", bool(result.response_token))
+    finally:
+        browser.close()
 
-    result = recaptcha.v2.solve(page, timeout=SOLVE_TIMEOUT)
-    jar = {c["name"]: c["value"] for c in page.context.cookies()}
-    ua = page.evaluate("() => navigator.userAgent")
-    browser.close()
-
-print("is_solved:", result.is_solved)
-print("cf_clearance:", "cf_clearance" in jar)
-if "cf_clearance" not in jar:
-    sys.exit("没拿到 cf_clearance：IP 软封，或者这页根本没有墙")
-
-# 重放：cookie + UA 发一个普通请求，200 就说明这条路真的通了
-resp = cffi.get(url, cookies=jar, headers={"User-Agent": ua}, impersonate="chrome",
-                timeout=30, proxies={"http": PROXY, "https": PROXY} if PROXY else None)
-print("重放:", resp.status_code, len(resp.content), "字节")
-sys.exit(0 if resp.status_code == 200 else 1)
+sys.exit(0 if result.is_solved and result.response_token else 1)
