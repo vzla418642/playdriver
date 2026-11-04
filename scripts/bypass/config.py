@@ -27,6 +27,11 @@ TIMEOUT = float(os.getenv("BYPASS_TIMEOUT", "60"))
 # 过挑战超时（秒）。太短会在慢站点上误判失败，太长会拖住队列
 SOLVE_TIMEOUT = float(os.getenv("BYPASS_SOLVE_TIMEOUT", "60"))
 
+# 冷路径失败后，多久内不再对同一 host 重试（秒）。
+# 冷路径一次是 60 秒 + 200-400MB 的有头浏览器，而转发是逐请求的 —— 一个页面
+# 几十个子资源撞上 403 就是几十次。没有这道闸，一个过不去的站点会把机器拖死。
+RETRY_COOLDOWN = float(os.getenv("BYPASS_RETRY_COOLDOWN", "60"))
+
 # ---- 以下基本不用动 ----
 
 # 响应体上限（MB）。超限返回 502，注意是缓冲完才判断
@@ -87,13 +92,26 @@ if not PASS_UA:
 DROP_RESPONSE = HOP_BY_HOP | {"content-encoding", "content-length"}
 
 BLOCK_STATUSES = frozenset({403, 503})
-BLOCK_MARKERS = (
-    b"cf-mitigated", b"just a moment", b"__cf_chl", b"cf_challenge", b"attention required",
+
+# 有挑战可过的拦截页特征（整页 interstitial）
+WALL_MARKERS = (
+    b"cf-mitigated", b"just a moment", b"__cf_chl", b"cf_challenge",
 )
+
+# 无挑战可过的硬封页：Cloudflare 的 WAF 规则拦截（1020 / 1015 等），标题固定
+# 是 "Attention Required! | Cloudflare"。起浏览器过去也只会看到一个静态拒绝页，
+# 白烧 400MB 和几十秒，必须和挑战页分开。
+UNSOLVABLE_MARKERS = (b"attention required",)
+
+BLOCK_MARKERS = WALL_MARKERS + UNSOLVABLE_MARKERS
+
+# 能证明"挑战确实过了"的唯一凭据。嵌入式 Turnstile 只给 cf-turnstile-response
+# token（由宿主页面自己提交），不会产生这个 cookie —— 所以它天然不在这套体系里。
+CLEARANCE_COOKIE = "cf_clearance"
 
 # 这些 cookie 由服务自己过挑战产生，与出口 IP / UA 强绑定。客户端从自己浏览器
 # 复制过来的那一个必然是别的环境发的，拿它覆盖刚过完挑战的值只会继续被拦。
-CF_OWNED = frozenset({"cf_clearance", "__cf_bm"})
+CF_OWNED = frozenset({CLEARANCE_COOKIE, "__cf_bm"})
 
 
 def mask_proxy(proxy: str) -> str:

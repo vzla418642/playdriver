@@ -2,9 +2,12 @@
 
 用 launch_persistent_context 而不是"先起 Chrome 再连 9222"：
 
-  - Playwright 直接持有浏览器进程，不需要额外开调试端口；
-  - 不需要自己管子进程回收、孤儿进程、端口冲突；
+  - Playwright 直接持有浏览器进程，不需要自己管子进程回收、孤儿进程、端口冲突；
   - profile 落盘由 Chrome 自己负责，关窗重开还是同一份 user-data。
+
+  注意：**默认仍然会开 CDP 端口**（RESIDENT_CDP_PORT，默认 9222），那是给外部
+  自动化脚本用的第二入口，和 Playwright 自己的 --remote-debugging-pipe 并存。
+  两者不冲突，见 _launch() 里的说明。
 
 生命周期的约定：
   - 关掉最后一个窗口 → context 关闭 → 自动重开，profile 不变；
@@ -23,6 +26,7 @@ from bypass.config import CHROME_PATH, PROXY
 from bypass.creds import related
 
 from .config import (
+    CDP_PORT,
     HEALTH_INTERVAL,
     MAX_LAUNCH_FAILURES,
     PROFILE_DIR,
@@ -158,6 +162,17 @@ class ResidentBrowser:
             # 两边出口不一致的话，这边过完的 cookie 到那边也用不了
             args.append(f"--proxy-server={PROXY}")
 
+        if CDP_PORT:
+            # 让外部脚本接管这个浏览器（自动化点击流程）。
+            # Playwright 自己走 --remote-debugging-pipe，两者可以并存（实测过）。
+            # 地址不用传：Chrome 136+ 会忽略 --remote-debugging-address，一律绑
+            # 127.0.0.1。容器里要跨机器访问只能靠 --network host。
+            args.append(f"--remote-debugging-port={CDP_PORT}")
+            # Chrome 111+ 会拒绝带 Origin 头的 WS 连接。Playwright / Puppeteer
+            # 不发这个头，但浏览器里打开 devtools 前端、以及部分第三方工具会发，
+            # 不开这个开关会莫名其妙 403。
+            args.append("--remote-allow-origins=*")
+
         # no_viewport：不模拟视口尺寸，页面按真实窗口大小排版，人工浏览才正常
         self._context = await self._pw.chromium.launch_persistent_context(
             PROFILE_DIR,
@@ -166,6 +181,8 @@ class ResidentBrowser:
             args=args,
             no_viewport=True,
         )
+        if CDP_PORT:
+            _log(f"CDP 已开启：http://127.0.0.1:{CDP_PORT}（无鉴权，仅限受信环境）")
 
     async def _alive(self) -> bool:
         if self._context is None:

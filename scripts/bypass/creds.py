@@ -9,7 +9,7 @@ from __future__ import annotations
 import threading
 import time
 
-from .config import COOKIE_TTL
+from .config import CLEARANCE_COOKIE, COOKIE_TTL
 
 
 def domain_chain(host: str) -> list[str]:
@@ -49,6 +49,16 @@ class CredStore:
                 if exp > now:
                     jar[name] = value
             return jar, self._agent
+
+    def has_clearance(self, host: str) -> bool:
+        """手里是否有可重放的 cf_clearance。
+
+        **不能用「jar 非空」代替**：任何站点都会下发 session / 统计 cookie，
+        而 update() 每次回包都写，那样 x-bypass-mode 会几乎永远报"有缓存"，
+        这个唯一的诊断信号就废了。
+        """
+        jar, _ = self.get(host)
+        return CLEARANCE_COOKIE in jar
 
     def update(self, host: str, cookies=None) -> None:
         """快路径回包的 cookie：不知道 domain，只能按 host-only 存。"""

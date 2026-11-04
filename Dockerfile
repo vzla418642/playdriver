@@ -26,6 +26,9 @@ COPY start.sh /usr/local/bin/start.sh
 COPY scripts/ ./scripts/
 RUN chmod +x /usr/local/bin/start.sh
 
+# 9222（CDP）故意不写进 EXPOSE：Chrome 只绑容器回环，-p 9222:9222 本来就不通，
+# 写上去只会误导；而且 docker run -P 会把它一起发布出去。要用 CDP 就加
+# --network host，详见 README「外部脚本控制（CDP）」。
 EXPOSE 6080 5900 8000
 
 # 关键：start.sh 变 ENTRYPOINT，用户传什么就执行什么

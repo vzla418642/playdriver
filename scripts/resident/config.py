@@ -35,3 +35,16 @@ MAX_LAUNCH_FAILURES = 5
 # 窗口尺寸，与 start.sh 里 Xvfb 的 1280x800 对齐
 WINDOW_WIDTH = 1280
 WINDOW_HEIGHT = 800
+
+# CDP 调试端口。**默认开启**，设 0 关闭。
+# 开着的目的是让外部脚本接管这个浏览器做自动化点击流程 —— 脚本点出来的挑战页，
+# Watcher 会照常接手过掉，两者是配合关系。
+#
+# 注意 CDP 没有任何鉴权：能连上端口就等于拿到了这个浏览器的一切（所有站点的
+# cookie / localStorage / 任意 JS 执行）。只在受信网络里开。
+#
+# **监听地址是 127.0.0.1，不可改**：Chrome 136+ 起会忽略 --remote-debugging-address，
+# 一律只绑回环（实测 Chrome 144，绑 0.0.0.0 和绑具体网卡 IP 都还是 127.0.0.1）。
+# 所以容器里想从宿主机/局域网连，只能 `--network host`，或者让脚本进容器跑；
+# 光 `-p 9222:9222` 是不通的（Docker 的端口映射走容器 IP，不是回环）。
+CDP_PORT = int(os.getenv("RESIDENT_CDP_PORT", "9222"))

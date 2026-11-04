@@ -57,7 +57,7 @@ curl -H "X-Target-URL: https://example.com/path" "http://localhost:8000/fetch"
 | --- | --- |
 | `X-Bypass-URL` | 本次转发的目标地址 |
 | `X-Bypass-Host` | 目标站点 host |
-| `X-Bypass-Mode` | `direct` 直连 / `cache` 命中缓存 / `solved` 本次过了挑战 / `waited` 等同 host 并发解完 / `blocked` 过完仍被拦 |
+| `X-Bypass-Mode` | `direct` 直连 / `clearance` 用了缓存里的 `cf_clearance` / `solved` 本次过了挑战 / `waited` 等同 host 并发解完 / `blocked` 被拦截且未通过 / `unsolvable` 硬封页，无挑战可过 |
 | `X-Bypass-Ms` | 本次转发耗时（毫秒） |
 
 ### 带登录态
@@ -83,8 +83,8 @@ r = requests.get(
 
 | 路径 | 触发条件 | 典型耗时 |
 | --- | --- | --- |
-| 快路径 | 缓存里有该 host 可用的 cookie | 0.1–1s |
-| 冷路径 | 目标返回 Cloudflare 挑战 | 10–30s |
+| 快路径 | 每个请求都先走（有 `cf_clearance` 就带上） | 0.1–1s |
+| 冷路径 | 目标返回 Cloudflare 挑战页 | 10–30s |
 
 快路径用 `curl_cffi` 以 Chrome 的 TLS 指纹直连，重放之前拿到的 `cf_clearance`。命中拦截时才走冷路径：用 PyPasser 驱动**有头** patchright 打开页面、过挑战，拿到 `cf_clearance` 与浏览器的真实 UA 后重试一次。冷路径的浏览器窗口在 noVNC 桌面里可见。
 
@@ -93,6 +93,30 @@ r = requests.get(
 Cloudflare 发的 `cf_clearance` 通常是 `domain=.example.com` 的**域级 cookie**，缓存按 RFC 6265 的域规则匹配，所以 `example.com` 与 `www.example.com` 通常只过一次挑战。若站点下发的是 host-only cookie，则各子域仍需各自过。
 
 **同一 host 的并发请求只会解一次挑战。** 并发场景下几个请求会在几秒内全部撞上 403，如果各自排队解一遍，N 个请求就是 N × 20s。现在第一个请求负责解，其余等待并复用结果——5 个并发从 90s+ 降到一次冷路径的耗时，等待的那些返回 `mode=waited`。
+
+**失败会冷却。** 解挑战失败（IP 软封、站点根本不可达）后，同一 host 在 `BYPASS_RETRY_COOLDOWN` 秒内直接返回 `blocked`，不再启动浏览器。没有这道闸的话，转发是逐请求的，一个页面几十个子资源撞上 403 就是几十次「60 秒 + 400MB」。
+
+### 能力边界：HTTP 转发与嵌入式 Turnstile
+
+HTTP 转发冷路径与常驻浏览器 Watcher 的处理范围不同：前者处理整页拦截并重放 cookie；后者还会自动处理当前页面内的 Turnstile widget，但不会代替宿主页面提交表单。
+
+| | 整页拦截（interstitial） | 嵌入式 Turnstile widget |
+| --- | --- | --- |
+| 产物 | `cf_clearance` cookie | `cf-turnstile-response` token |
+| 谁消费 | 任何后续 HTTP 请求 | **宿主页面自己的 JS / 表单 POST** |
+| 有效期 | 由 CF 决定，通常几十分钟起 | 300 秒，一次性 |
+| HTTP 转发冷路径 | 获取并重放 cookie | 不解 widget，也不代交 token |
+| 常驻浏览器 Watcher | 自动调用 Cloudflare solver | 自动调用 Turnstile solver，token 留在宿主页面 |
+
+所以 **HTTP 转发冷路径只处理整页拦截**；常驻浏览器中的 widget 自动验证不等于完成登录，也不等于获得可导出的会话 cookie。
+
+嵌入式 Turnstile 通常出现在表单登录场景，是有状态流程，正确做法是让常驻浏览器去处理：
+
+1. 打开 `http://localhost:8000/vnc`，或通过 CDP 操作常驻浏览器，完成站点的登录流程；Watcher 会尝试自动完成 Turnstile 验证，失败时可在画面中手动处理
+2. 由你或业务脚本提交表单，确认站点已登录并下发会话 cookie，再用 `GET /cookies?domain=example.com` 导出
+3. 之后用这批会话 cookie 走转发；Turnstile token 本身不是可重放的登录 cookie
+
+另外，Cloudflare 的 **WAF 硬封页**（`Attention Required! | Cloudflare`，1020/1015 等）也没有挑战可过，会直接返回 `mode=unsolvable`，不会白起浏览器。
 
 ### 环境变量
 
@@ -103,6 +127,7 @@ Cloudflare 发的 `cf_clearance` 通常是 `domain=.example.com` 的**域级 coo
 | `BYPASS_COLD` | 设为 `0` 关闭冷路径，只做透传 | `1` |
 | `BYPASS_TIMEOUT` | 单次转发超时（秒） | `60` |
 | `BYPASS_SOLVE_TIMEOUT` | 过挑战超时（秒） | `60` |
+| `BYPASS_RETRY_COOLDOWN` | 过挑战失败后同 host 的冷却秒数，期间不再起浏览器 | `60` |
 | `BYPASS_MAX_BODY_MB` | 响应体上限（MB） | `20` |
 | `BYPASS_IMPERSONATE` | `curl_cffi` 指纹模板，如 `chrome`、`chrome131` | `chrome` |
 | `CHROME_PATH` | 浏览器可执行文件，留空则自动探测（镜像内为 `/usr/bin/google-chrome`） | 自动 |
@@ -124,6 +149,8 @@ docker run --rm -p 8000:8000 \
 - 冷路径**全局串行**：一个有头 Chrome 占 200–400MB，同一时刻只解一个挑战。同一 host 的并发会合并成一次，不同 host 仍要排队。
 - `cf_clearance` 绑定出口 IP 与 UA，换代理或换指纹都要重新过挑战。
 - 跨注册域的重定向（例如跳到完全不同的域名）要各自过挑战，cookie 不跨域共享。
+- **HTTP 转发冷路径只处理整页拦截**：不支持嵌入式 widget 或 API 形态的 Turnstile token 代交。常驻浏览器 Watcher 支持页面内 widget 自动验证；登录及表单提交仍由你或业务脚本完成，拿到会话 cookie 后再用 `/cookies` 导出。
+- 过挑战失败后按 host 冷却 `BYPASS_RETRY_COOLDOWN` 秒，期间返回 `blocked` 且不重试。
 - 默认丢弃客户端的 `User-Agent`，改用与 TLS 指纹匹配的 Chrome UA；确需透传时设 `BYPASS_PASS_UA=1`。
 - 服务无鉴权，任何能访问端口的人都能借它出网。只在本机使用时请绑定 `127.0.0.1`。
 
@@ -132,8 +159,59 @@ docker run --rm -p 8000:8000 \
 默认就开着。它和绕过服务在同一个进程、同一个端口上，一起提供三件事：
 
 - noVNC 桌面里一个常驻的有头 Chrome，你自己点；
-- 页面停在 Cloudflare 拦截页上时，几秒内自动过掉；
+- Watcher 检测 Cloudflare 整页拦截和嵌入式 Turnstile，并调用对应 PyPasser solver 尝试自动验证（不保证成功，也不自动提交表单）；
 - `/cookies` 读这个浏览器里的 cookie。
+
+### 自动过验证怎么工作
+
+一个 2 秒一轮的轮询任务（`RESIDENT_DETECT`）遍历**所有标签页**，不是只在页面首次加载时判一次。每轮在页面里执行一段检测脚本，返回三档：
+
+| 返回 | 判据 | 动作 |
+| --- | --- | --- |
+| `wall` | 标题/正文含 `just a moment`、`checking your browser`、`enable javascript and cookies to continue`，或页面有 `#challenge-form`、`#challenge-stage` 这类整页墙容器 | `_solve()` 调用 `pypasser.antibot.cloudflare.asolve` |
+| `widget` | 页面里有 `challenges.cloudflare.com` 的 iframe 或 `.cf-turnstile` 容器 | `_solve_turnstile()` 调用 `pypasser.captcha.turnstile.asolve` |
+| `''` | 都没有 | 什么都不做 |
+
+先判墙再判 widget，因为墙页里也嵌着 widget 的 iframe——顺序反了会把墙误降级成 widget。
+
+**嵌入式验证的边界**：solver 只完成 widget 验证，`cf-turnstile-response` token 留在宿主页面，由页面 JS / 业务脚本继续提交给站点后端。Watcher 不主动提交表单、不导出或打印 token，也不把它当作 `cf_clearance`。页面中存在 response input 且其值全部非空时跳过 solver，避免验证完成后 iframe / 容器仍在导致重复点击；没有 response input 的页面无法通过此检查判定已完成。
+
+两类 solver 都复用 `BYPASS_SOLVE_TIMEOUT`；验证返回未成功或抛出异常后，同一地址会冷却 `RESIDENT_RETRY_COOLDOWN` 秒（默认 30）。PyPasser 延迟加载，导入失败不会阻止常驻服务启动，但自动验证不可用，需手动处理。
+
+### 外部脚本控制（CDP）
+
+常驻浏览器**默认开 CDP 端口 `9222`**，外部脚本可以直接接管它，不用自己再起一个 Chrome：
+
+```python
+from playwright.sync_api import sync_playwright
+
+with sync_playwright() as pw:
+    browser = pw.chromium.connect_over_cdp("http://127.0.0.1:9222")
+    page = browser.contexts[0].pages[0]      # 就是 noVNC 里那个窗口
+    page.click("#submit")
+```
+
+和 Watcher 是**配合关系**：脚本点出来的挑战页，Watcher 会在 2 秒内接手过掉，脚本只要等页面过去就行。两者共用同一个 Playwright 上下文，不存在两个浏览器。
+
+设 `RESIDENT_CDP_PORT=0` 关闭。
+
+**只绑 `127.0.0.1`，不可改。** Chrome 136 起会忽略 `--remote-debugging-address`（实测 144：绑 `0.0.0.0` 或绑具体网卡 IP，netstat 都还是 `127.0.0.1:9222`）。容器里从宿主机连有三种办法：
+
+| 办法 | 命令 | 说明 |
+| --- | --- | --- |
+| 容器用宿主网络 | `docker run --network host ...` | 最简单，容器回环就是宿主回环 |
+| 脚本进容器跑 | `docker exec -it <容器> python your_script.py` | 不用改网络 |
+| 自己加一层转发 | 容器内 `socat TCP-LISTEN:9222,fork TCP:127.0.0.1:9222` | 需要 socat，等于把端口重新暴露出去 |
+
+光 `-p 9222:9222` **不通**——Docker 的端口映射打的是容器 IP，而 Chrome 只听容器回环。
+
+三个使用上的注意：
+
+- **CDP 没有鉴权。** 能连上端口就等于拿到这个浏览器的一切（所有站点的 cookie、localStorage、任意 JS 执行）。只在受信网络里开。
+- **`Input` 是共享的。** 脚本的点击和人通过 noVNC 的点击操作同一个窗口、同一个焦点，同时操作会互相干扰。
+- **脚本建的标签页要自己关。** profile 是持久的（`RESIDENT_PROFILE`，默认 `/data/profile`），脚本退出后残留的标签页下次启动还在。
+
+`Fetch.enable` / `Network.setRequestInterception` 这类请求拦截**不要用**：它们会把请求挂起等指令，一旦脚本没 `continueRequest`，Playwright 那边（包括 Watcher 的检测）就会卡在导航中，现象极难排查。`Runtime.evaluate` / `Input.dispatchMouseEvent` / `DOM.querySelector` 这类纯动作命令随便用。
 
 ### 和绕过服务的关系
 
@@ -370,10 +448,10 @@ $(python -c "import adbutils; print(adbutils.adb_path())") -a nodaemon server
 
 ### 已知限制
 
-- 常驻浏览器由 Playwright 以 `--remote-debugging-pipe` 持有，**不开 9222**，外部脚本连不进来。要远程驱动，自己启动一个带 `--remote-debugging-port` 的 Chrome（Chrome 136 起必须同时给 `--user-data-dir`，否则端口不会开）。
+- CDP 端口默认开着（`9222`），但**只绑 `127.0.0.1`**：Chrome 136 起会忽略 `--remote-debugging-address`，一律只监听回环。所以容器里从宿主机连需要 `--network host`，光 `-p 9222:9222` 不通（Docker 的端口映射走容器 IP，不是回环）。详见[外部脚本控制](#外部脚本控制cdp)。
 - 冷路径过挑战时会在同一块屏幕上再开一个窗口，可能抢走焦点。
 - 常驻浏览器常占 200–400MB，同时触发冷路径时内存翻倍。
-- 自动过验证只处理 Cloudflare 的整页拦截；登录页里独立的 Turnstile 组件不保证能过。
+- Watcher 会尝试自动处理整页拦截及嵌入式 Turnstile，但不保证验证成功。widget 验证成功不代表表单已提交或登录已完成；失败可在 noVNC 手动处理，同一地址在冷却结束后才自动重试。
 
 ## 运行自己的脚本
 
@@ -420,9 +498,27 @@ with sync_playwright() as p:
 
 镜像也预装了 `nodriver`，可参考 `scripts/test/test_nodriver.py` 的启动方式。不要将脚本中的 `headless` 设为 `True`，否则 noVNC 桌面不会显示浏览器窗口。
 
-### 容器内没有 CDP 端口
+`scripts/test/` 下有三个可直接跑的示例，分别对应三种典型用法：
 
-默认命令会预启动一个常驻浏览器（见[常驻浏览器](#常驻浏览器)），但它由 Playwright 以 `--remote-debugging-pipe` 持有，**不开放 CDP 调试端口**（`9222` 之类），外部脚本连不进来。你自己脚本启动的 Chrome 是另一个进程，随脚本退出而结束。
+| 脚本 | 干什么 | 行数 | 环境 |
+| --- | --- | --- | --- |
+| `test_cloudflare.py` | 过**整页墙**，拿 `cf_clearance` 并重放验证 | 42 | 独立 |
+| `test_turnstile.py` | 过**嵌入式 Turnstile**，拿 `cf-turnstile-response` | 42 | 独立 |
+| `test_remote.py` | CDP 接管**已经在跑**的常驻浏览器 | 30 | 需要服务起着 |
+
+```sh
+python scripts/test/test_cloudflare.py https://example.com
+python scripts/test/test_turnstile.py https://example.com/login
+python scripts/test/test_remote.py https://example.com "#submit"
+```
+
+三个都是直白的三段式（起浏览器 → 干活 → 打印），没有参数框架，改起来照抄就行。
+
+前两个是「一次性环境」的用法（`launch` 而非 `launch_persistent_context`，用完就关，不留 profile）；第三个是「接管常驻浏览器」的用法，和 Watcher 配合——脚本点出来的挑战页，Watcher 两秒内接手过掉。
+
+### 脚本和常驻浏览器的关系
+
+默认命令会预启动一个常驻浏览器（见[常驻浏览器](#常驻浏览器)），它**默认开 CDP 端口 `9222`**，你的脚本可以直接 `connect_over_cdp` 接管它——脚本点出来的挑战页，Watcher 会照常接手过掉。注意端口只绑 `127.0.0.1`，所以要嘛脚本跟它在同一个容器/同一台机器，要嘛容器加 `--network host`。你自己脚本另起的 Chrome 是另一个进程，随脚本退出而结束。
 
 由此带来一个限制：noVNC 只映射容器内 `:99` 的画面。脚本在容器内启动的浏览器可以看到；如果脚本连接的是容器外的浏览器，那部分画面不经过本镜像，需要由那台机器自己提供查看方式。
 

@@ -21,6 +21,7 @@ ENV_DOC = [
     ("BYPASS_COLD", "设为 0 关闭冷路径，只做透传", "1"),
     ("BYPASS_TIMEOUT", "单次转发超时（秒）", "60"),
     ("BYPASS_SOLVE_TIMEOUT", "过挑战超时（秒）", "60"),
+    ("BYPASS_RETRY_COOLDOWN", "过挑战失败后同 host 的冷却秒数", "60"),
     ("BYPASS_MAX_BODY_MB", "响应体上限（MB）", "20"),
     ("BYPASS_IMPERSONATE", "curl_cffi 指纹模板", "chrome"),
     ("CHROME_PATH", "浏览器可执行文件，留空则自动探测", "自动"),
@@ -32,8 +33,9 @@ ENV_DOC = [
 HEADERS_DOC = [
     ("X-Bypass-URL", "本次转发的目标地址"),
     ("X-Bypass-Host", "目标站点 host"),
-    ("X-Bypass-Mode", "direct 直连 / cache 命中缓存 / solved 本次过挑战 / "
-                      "waited 等同 host 并发解完 / blocked 过完仍被拦"),
+    ("X-Bypass-Mode", "direct 直连 / clearance 用缓存的 cf_clearance / "
+                      "solved 本次过了挑战 / waited 等同 host 并发解完 / "
+                      "blocked 被拦截且未通过 / unsolvable 硬封页，无挑战可过"),
     ("X-Bypass-Ms", "本次转发耗时（毫秒）"),
 ]
 
@@ -128,6 +130,14 @@ def doc_html() -> str:
         f"<li>响应体先完整缓冲再判断上限（{_MAX_MB}MB），超限返回 502。</li>"
         "<li>冷路径全局串行：一个有头 Chrome 约 200-400MB，并发过挑战没有意义。</li>"
         "<li><code>cf_clearance</code> 与出口 IP、UA 强绑定，代理换了就得重新过挑战。</li>"
+        "<li><b>只处理整页拦截（interstitial）</b>：嵌入式 Turnstile widget 和 API "
+        "形态的 Turnstile 都不支持。前者的 <code>cf-turnstile-response</code> token "
+        "由宿主页面自己提交，后者要的是一次性 token —— 两者都不是「一个可重放的 "
+        "cookie」，代理层拿不到也没法替客户端提交。这类页面请用下面的方式处理。</li>"
+        "<li>需要登录态或过嵌入式验证的站点：在常驻浏览器里（<code>/vnc</code>）"
+        "人工操作一次，再用 <code>/cookies</code> 导出会话 cookie 交给本服务重放。</li>"
+        "<li>过挑战失败后按 host 冷却 <code>BYPASS_RETRY_COOLDOWN</code> 秒，"
+        "期间直接返回 <code>blocked</code>，不再启动浏览器。</li>"
         "<li>本页只在请求头带 <code>Accept: text/html</code> 时返回，脚本调用拿到的是 JSON。</li>"
         "</ul></main></body></html>"
     )
