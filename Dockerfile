@@ -5,12 +5,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
     DISPLAY=:99
 
-# 合并安装 + 清理 + tini。
-# 故意不装 apt 的 ffmpeg：PyPasser 的音频链路（reCAPTCHA v2）用的是 pip 的
-# imageio-ffmpeg —— speech/ffmpeg.py 里 ensure_ffmpeg() 先找系统 ffmpeg，找不到
-# 才回落到 imageio 自带的静态二进制，两条路等价。而系统 ffmpeg 会连带
-# libav*/SDL2/tesseract/flite/pulseaudio/x265/aom 等约 300~400MB，纯属浪费。
-# 要重新加之前，先跑 scripts/test/test_recaptchav2.py 确认真的缺。
+# 和原版唯一区别：不装 ffmpeg。
+# 依据：全项目 .py/.sh/.md 零引用；PyPasser 的音频链路用 pip 的 imageio-ffmpeg
+# （speech/ffmpeg.py 的 ensure_ffmpeg() 先找系统 ffmpeg，找不到才回落到 imageio
+# 自带的静态二进制，两条路等价）。系统 ffmpeg 会连带 libav*/SDL2/tesseract 等
+# 一大票依赖。要加回来，跑 scripts/test/test_recaptchav2.py 确认真的缺。
 RUN apt-get update && apt-get install -y --no-install-recommends \
         wget gnupg ca-certificates \
         xvfb x11vnc websockify novnc tini fonts-noto-cjk \
@@ -20,14 +19,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && wget -qO- https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /etc/apt/keyrings/google.gpg \
     && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
     && apt-get update && apt-get install -y --no-install-recommends google-chrome-stable \
-    && apt-mark manual google-chrome-stable \
-    && apt-get purge -y wget gnupg \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* \
-    && chmod 777 /tmp \
-    && ( test -x /opt/google/chrome/google-chrome \
-         || { echo "!!! chrome 二进制不存在，装包情况如下"; ls -l /opt/google /usr/bin/google-chrome* 2>&1; dpkg -l | grep -i chrome; exit 1; } ) \
-    && ln -sf /opt/google/chrome/google-chrome /usr/bin/google-chrome \
-    && /usr/bin/google-chrome --version
+    && chmod 777 /tmp
 
 WORKDIR /app
 COPY requirements.txt .
