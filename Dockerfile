@@ -20,9 +20,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && wget -qO- https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /etc/apt/keyrings/google.gpg \
     && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
     && apt-get update && apt-get install -y --no-install-recommends google-chrome-stable \
-    && apt-get purge -y --auto-remove wget gnupg \
+    && apt-mark manual google-chrome-stable \
+    && apt-get purge -y wget gnupg \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* \
-    && chmod 777 /tmp
+    && chmod 777 /tmp \
+    && test -x /usr/bin/google-chrome
 
 WORKDIR /app
 COPY requirements.txt .
