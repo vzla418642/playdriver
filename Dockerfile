@@ -24,7 +24,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get purge -y wget gnupg \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* \
     && chmod 777 /tmp \
-    && test -x /usr/bin/google-chrome
+    && ( test -x /opt/google/chrome/google-chrome \
+         || { echo "!!! chrome 二进制不存在，装包情况如下"; ls -l /opt/google /usr/bin/google-chrome* 2>&1; dpkg -l | grep -i chrome; exit 1; } ) \
+    && ln -sf /opt/google/chrome/google-chrome /usr/bin/google-chrome \
+    && /usr/bin/google-chrome --version
 
 WORKDIR /app
 COPY requirements.txt .
