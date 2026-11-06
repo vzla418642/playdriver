@@ -5,16 +5,17 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
     DISPLAY=:99
 
-# 和原版唯一区别：不装 ffmpeg。
-# 依据：全项目 .py/.sh/.md 零引用；PyPasser 的音频链路用 pip 的 imageio-ffmpeg
-# （speech/ffmpeg.py 的 ensure_ffmpeg() 先找系统 ffmpeg，找不到才回落到 imageio
-# 自带的静态二进制，两条路等价）。系统 ffmpeg 会连带 libav*/SDL2/tesseract 等
-# 一大票依赖。要加回来，跑 scripts/test/test_recaptchav2.py 确认真的缺。
+# 合并安装 + 清理 + tini。
+# ffmpeg 必须留着：pydub 的 AudioSegment.from_mp3() 会走 mediainfo_json() 调 ffprobe，
+# 而 pip 的 imageio-ffmpeg 只打包了 ffmpeg、没有 ffprobe。PyPasser 的 ensure_ffmpeg()
+# 只设置 AudioSegment.converter，管不到 prober，所以缺 ffprobe 会报
+# "AudioDecodeError: ... No such file or directory: 'ffprobe'"。
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        wget gnupg ca-certificates \
+        wget gnupg ca-certificates ffmpeg \
         xvfb x11vnc websockify novnc tini fonts-noto-cjk \
         libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
         libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2 \
+    && ffmpeg -version > /dev/null && ffprobe -version > /dev/null \
     && install -m 0755 -d /etc/apt/keyrings \
     && wget -qO- https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /etc/apt/keyrings/google.gpg \
     && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
@@ -29,7 +30,6 @@ COPY requirements.txt .
 # numpy/pillow 一起跳过，得手工补回来。卸载时 pip 会警告 camoufox 缺依赖，忽略即可。
 # 最后那句是守门员：pypasser/__init__.py 会急切导入 captcha 下所有子包，缺东西当场报错。
 RUN pip install -r requirements.txt \
- && pip uninstall -y playwright \
  && python -c "from pypasser.antibot import cloudflare; from pypasser.captcha import turnstile; print('pypasser ok')"
 
 # 构建时下载并验证 reCAPTCHA V2 默认语音模型；Vosk 解压后自动删除 zip。
